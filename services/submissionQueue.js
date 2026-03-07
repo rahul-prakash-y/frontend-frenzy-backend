@@ -22,6 +22,15 @@ const Submission = require('../models/Submission');
 // Path to the "lifeboat" dead letter log
 const DEAD_LETTER_LOG = path.join(__dirname, '../failed_submissions.log');
 
+// Helper to prevent JSON.stringify from crashing the server on circular refs/BigInts
+function safeStringify(obj) {
+    try {
+        return JSON.stringify(obj);
+    } catch (err) {
+        return JSON.stringify({ error: 'Unserializable payload', reason: err.message, rawLength: Array.isArray(obj) ? obj.length : 1 });
+    }
+}
+
 // ─── In-Memory Queue ──────────────────────────────────────────────────────────
 
 /** @type {Object[]} Raw submission payload objects waiting to be persisted. */
@@ -110,10 +119,10 @@ async function flushQueue() {
             // Task 1: Write to the dead letter log as our "Lifeboat"
             console.error('[SubmissionQueue] Unexpected flush error. Writing to dead letter log.', err.message);
             // Task: Mirror to stdout for Render's 48-hour log retention
-            console.error('[BACKUP_DATA]', JSON.stringify(batch));
+            console.error('[BACKUP_DATA]', safeStringify(batch));
             try {
                 const logEntry = { timestamp: new Date().toISOString(), error: err.message, batch };
-                fs.appendFileSync(DEAD_LETTER_LOG, JSON.stringify(logEntry) + '\n', 'utf8');
+                fs.appendFileSync(DEAD_LETTER_LOG, safeStringify(logEntry) + '\n', 'utf8');
                 console.info('[SubmissionQueue] Successfully wrote failed batch to failed_submissions.log');
             } catch (fsErr) {
                 console.error('[SubmissionQueue] CRITICAL FATAL: Could not write to dead letter log either!', fsErr.message);
@@ -184,10 +193,10 @@ async function flushNow() {
                 // Unexpected error during shutdown flush.
                 console.error('[SubmissionQueue] flushNow unexpected error:', err.message);
                 // Task: Mirror to stdout for Render's 48-hour log retention
-                console.error('[BACKUP_DATA]', JSON.stringify(batch));
+                console.error('[BACKUP_DATA]', safeStringify(batch));
                 try {
                     const logEntry = { timestamp: new Date().toISOString(), event: 'SHUTDOWN_FLUSH', error: err.message, batch };
-                    fs.appendFileSync(DEAD_LETTER_LOG, JSON.stringify(logEntry) + '\n', 'utf8');
+                    fs.appendFileSync(DEAD_LETTER_LOG, safeStringify(logEntry) + '\n', 'utf8');
                     console.info('[SubmissionQueue] SHUTDOWN: Wrote failed batch to failed_submissions.log');
                 } catch (fsErr) {
                     console.error('[SubmissionQueue] SHUTDOWN CRITICAL: Failed to write dead letter log.', fsErr.message);

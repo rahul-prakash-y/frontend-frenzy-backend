@@ -39,7 +39,10 @@ async function refreshBannedCache() {
 module.exports = fp(async function (fastify, opts) {
     // Register the JWT plugin
     fastify.register(fastifyJwt, {
-        secret: process.env.JWT_SECRET || 'supersecret_ccc_key_change_in_production'
+        secret: process.env.JWT_SECRET || 'supersecret_ccc_key_change_in_production',
+        verify: {
+            allowedClockSkew: 60 // 60 seconds tolerance for inaccurate student laptop clocks
+        }
     });
 
     // ── Helper: full DB check (tokenIssuedAfter + isBanned) ──────────────────

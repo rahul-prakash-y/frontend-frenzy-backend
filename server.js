@@ -16,7 +16,7 @@ const { startSubmissionQueue, flushNow } = require('./services/submissionQueue')
 // Wildcard '*' is intentionally NOT used.
 fastify.register(require('@fastify/cors'), {
     origin: (origin, callback) => {
-        const allowedOrigin = process.env.FRONTEND_URL;
+        const allowedOrigin = process.env.FRONTEND_URL || "*";
 
         // Always allow non-browser requests (e.g. curl, Postman, health checks)
         // where `origin` header is undefined.

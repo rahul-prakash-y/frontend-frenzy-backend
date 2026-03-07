@@ -23,8 +23,28 @@ const path = require("path");
 
 // Configure CORS for Frontend Interaction
 fastify.register(require('@fastify/cors'), {
-    origin: process.env.FRONTEND_URL || '*', // Update in production to explicit domain
-    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
+    origin: (origin, cb) => {
+        // Define your exact allowed URLs here
+        const allowedOrigins = [
+            process.env.FRONTEND_URL, // Your Vercel URL
+            'http://localhost:5173',  // Local Vite React
+            'http://localhost:3000'   // Local CRA React
+        ];
+
+        // 1. Allow requests with no origin (like Postman or curl)
+        if (!origin) {
+            return cb(null, true);
+        }
+
+        // 2. Check if the incoming origin is in our allowed list
+        if (allowedOrigins.includes(origin)) {
+            return cb(null, true);
+        }
+
+        // 3. Reject anything else
+        return cb(new Error(`CORS blocked: Origin ${origin} not allowed`), false);
+    },
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'], // Added OPTIONS for preflight
     credentials: true
 });
 

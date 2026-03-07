@@ -17,7 +17,7 @@
 
 require('dotenv').config(); // Reads MONGO_URI from your local .env
 const mongoose = require('mongoose');
-const bcrypt = require('bcrypt');
+const bcrypt = require('bcryptjs');
 
 // ─── Load the User model ──────────────────────────────────────────────────────
 // Adjust the path if your project layout differs.

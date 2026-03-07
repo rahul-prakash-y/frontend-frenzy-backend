@@ -109,6 +109,8 @@ async function flushQueue() {
             // DO NOT re-queue infinitely. This will blow up RAM if the DB is permanently down.
             // Task 1: Write to the dead letter log as our "Lifeboat"
             console.error('[SubmissionQueue] Unexpected flush error. Writing to dead letter log.', err.message);
+            // Task: Mirror to stdout for Render's 48-hour log retention
+            console.error('[BACKUP_DATA]', JSON.stringify(batch));
             try {
                 const logEntry = { timestamp: new Date().toISOString(), error: err.message, batch };
                 fs.appendFileSync(DEAD_LETTER_LOG, JSON.stringify(logEntry) + '\n', 'utf8');
@@ -181,6 +183,8 @@ async function flushNow() {
             } else {
                 // Unexpected error during shutdown flush.
                 console.error('[SubmissionQueue] flushNow unexpected error:', err.message);
+                // Task: Mirror to stdout for Render's 48-hour log retention
+                console.error('[BACKUP_DATA]', JSON.stringify(batch));
                 try {
                     const logEntry = { timestamp: new Date().toISOString(), event: 'SHUTDOWN_FLUSH', error: err.message, batch };
                     fs.appendFileSync(DEAD_LETTER_LOG, JSON.stringify(logEntry) + '\n', 'utf8');

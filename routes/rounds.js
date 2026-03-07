@@ -765,4 +765,160 @@ module.exports = async function (fastify, opts) {
             return reply.code(500).send({ error: 'Failed to autosave' });
         }
     });
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Task 1: Global Leaderboard  (GET /api/rounds/leaderboard)
+    // ─────────────────────────────────────────────────────────────────────────
+    /**
+     * Reads ONLY from the in-memory leaderboard cache — zero MongoDB hits.
+     * The cache is refreshed every 60 seconds by the background service
+     * started in server.js via startLeaderboardCache().
+     *
+     * Auth: authenticate (student or admin)
+     */
+    fastify.get('/leaderboard', { preValidation: [fastify.authenticate] }, async (request, reply) => {
+        const { getLeaderboard, getCacheMetadata } = require('../services/leaderboardCache');
+
+        const data = getLeaderboard();    // O(1) — pure in-memory read
+        const metadata = getCacheMetadata();
+
+        return reply.code(200).send({
+            success: true,
+            meta: {
+                totalEntries: metadata.totalEntries,
+                lastUpdatedAt: metadata.lastUpdatedAt,
+                refreshIntervalSeconds: 60
+            },
+            data
+        });
+    });
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Task 5: Atomic Whitelist Update  (POST /api/rounds/:roundId/whitelist/add)
+    // ─────────────────────────────────────────────────────────────────────────
+    /**
+     * Adds one or more student ObjectIds to Round.allowedStudentIds using
+     * MongoDB's $addToSet operator, which guarantees:
+     *   • Atomicity  — no read-modify-write race conditions
+     *   • Idempotency — duplicates are silently ignored by the DB engine
+     *
+     * Body: { studentIds: ["<ObjectId>", …] }
+     * Auth: requireAdmin
+     */
+    fastify.post('/:roundId/whitelist/add', { preValidation: [fastify.requireAdmin] }, async (request, reply) => {
+        const { roundId } = request.params;
+        const { studentIds } = request.body;
+
+        if (!mongoose.Types.ObjectId.isValid(roundId)) {
+            return reply.code(400).send({ error: 'Invalid Round ID format' });
+        }
+
+        if (!Array.isArray(studentIds) || studentIds.length === 0) {
+            return reply.code(400).send({ error: 'studentIds must be a non-empty array' });
+        }
+
+        // Validate each ID before touching the DB
+        const invalidIds = studentIds.filter(id => !mongoose.Types.ObjectId.isValid(id));
+        if (invalidIds.length > 0) {
+            return reply.code(400).send({
+                error: 'One or more studentIds are not valid ObjectIds',
+                invalidIds
+            });
+        }
+
+        try {
+            // Task 5: $addToSet with $each for atomic, duplicate-safe bulk insert.
+            // DO NOT use: Round.findById() → push() → save()  ← race condition!
+            const updatedRound = await Round.findByIdAndUpdate(
+                roundId,
+                { $addToSet: { allowedStudentIds: { $each: studentIds } } },
+                { new: true, select: 'name allowedStudentIds' }
+            );
+
+            if (!updatedRound) {
+                return reply.code(404).send({ error: 'Round not found' });
+            }
+
+            await logActivity({
+                action: 'WHITELIST_UPDATED',
+                performedBy: {
+                    userId: request.user?.userId,
+                    name: request.user?.name,
+                    role: request.user?.role
+                },
+                target: {
+                    type: 'Round',
+                    id: roundId,
+                    label: `${studentIds.length} student(s) added to whitelist for ${updatedRound.name}`
+                },
+                ip: request.ip
+            });
+
+            return reply.code(200).send({
+                success: true,
+                message: `Whitelist updated atomically. ${studentIds.length} ID(s) processed (duplicates ignored).`,
+                data: {
+                    roundName: updatedRound.name,
+                    totalWhitelisted: updatedRound.allowedStudentIds.length
+                }
+            });
+
+        } catch (error) {
+            fastify.log.error(error);
+            return reply.code(500).send({ error: 'Failed to update whitelist' });
+        }
+    });
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Task 2 companion: Enqueue Submission  (POST /api/rounds/:roundId/enqueue-submit)
+    // ─────────────────────────────────────────────────────────────────────────
+    /**
+     * High-traffic variant of the submit endpoint.
+     * Pushes the payload to the in-memory submissionQueue and immediately
+     * responds 200 OK. The background flush worker (startSubmissionQueue)
+     * will batch-insert up to 50 docs every 5 seconds via insertMany().
+     *
+     * NOTE: Use this endpoint if you do NOT need instant DB confirmation.
+     *       The original /:roundId/submit endpoint still performs a
+     *       synchronous save for critical final submissions and remains
+     *       the primary path. This endpoint is provided as an overflow
+     *       path during peak traffic (400 concurrent students).
+     *
+     * Auth: authenticate (Student)
+     */
+    fastify.post('/:roundId/enqueue-submit', { preValidation: [fastify.authenticate] }, async (request, reply) => {
+        const { roundId } = request.params;
+        const { codeContent, pdfUrl, answers, autoScore } = request.body;
+        const studentId = request.user.userId;
+
+        if (!mongoose.Types.ObjectId.isValid(roundId)) {
+            return reply.code(400).send({ error: 'Invalid Round ID' });
+        }
+
+        const { enqueueSubmission, getQueueLength } = require('../services/submissionQueue');
+
+        // Build the payload that matches the Submission schema fields
+        const payload = {
+            student: studentId,
+            round: roundId,
+            status: 'SUBMITTED',
+            endTime: new Date(),
+            codeContent: answers
+                ? (typeof answers === 'object' ? JSON.stringify(answers) : answers)
+                : (codeContent || ''),
+            pdfUrl: pdfUrl || null,
+            autoScore: autoScore || 0,
+            score: autoScore || 0
+        };
+
+        const queueLength = enqueueSubmission(payload);
+
+        fastify.log.info(`[SubmissionQueue] Enqueued for student ${studentId}. Queue depth: ${queueLength}`);
+
+        return reply.code(200).send({
+            success: true,
+            message: 'Submission received and queued for processing.',
+            queueDepth: queueLength
+        });
+    });
 };

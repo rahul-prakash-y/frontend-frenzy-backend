@@ -776,7 +776,7 @@ module.exports = async function (fastify, opts) {
      *
      * Auth: authenticate (student or admin)
      */
-    fastify.get('/leaderboard', { preValidation: [fastify.authenticate] }, async (request, reply) => {
+    fastify.get('/leaderboard', { preValidation: [fastify.authenticateLight] }, async (request, reply) => {
         const { getLeaderboard, getCacheMetadata } = require('../services/leaderboardCache');
 
         const data = getLeaderboard();    // O(1) — pure in-memory read
@@ -886,7 +886,7 @@ module.exports = async function (fastify, opts) {
      *
      * Auth: authenticate (Student)
      */
-    fastify.post('/:roundId/enqueue-submit', { preValidation: [fastify.authenticate] }, async (request, reply) => {
+    fastify.post('/:roundId/enqueue-submit', { preValidation: [fastify.authenticateLight] }, async (request, reply) => {
         const { roundId } = request.params;
         const { codeContent, pdfUrl, answers, autoScore } = request.body;
         const studentId = request.user.userId;

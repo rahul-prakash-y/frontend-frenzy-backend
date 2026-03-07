@@ -15,7 +15,12 @@
 
 'use strict';
 
+const fs = require('fs');
+const path = require('path');
 const Submission = require('../models/Submission');
+
+// Path to the "lifeboat" dead letter log
+const DEAD_LETTER_LOG = path.join(__dirname, '../failed_submissions.log');
 
 // ─── In-Memory Queue ──────────────────────────────────────────────────────────
 
@@ -100,9 +105,19 @@ async function flushQueue() {
             );
             // Do NOT re-queue — duplicates are expected (student hitting submit twice)
         } else {
-            // Unexpected error — re-queue the batch so data is not lost
-            console.error('[SubmissionQueue] Unexpected flush error, re-queuing batch:', err.message);
-            submissionQueue.unshift(...batch);
+            // Unexpected error — we can't save to MongoDB.
+            // DO NOT re-queue infinitely. This will blow up RAM if the DB is permanently down.
+            // Task 1: Write to the dead letter log as our "Lifeboat"
+            console.error('[SubmissionQueue] Unexpected flush error. Writing to dead letter log.', err.message);
+            try {
+                const logEntry = { timestamp: new Date().toISOString(), error: err.message, batch };
+                fs.appendFileSync(DEAD_LETTER_LOG, JSON.stringify(logEntry) + '\n', 'utf8');
+                console.info('[SubmissionQueue] Successfully wrote failed batch to failed_submissions.log');
+            } catch (fsErr) {
+                console.error('[SubmissionQueue] CRITICAL FATAL: Could not write to dead letter log either!', fsErr.message);
+                // At this point we must re-queue as an absolute last resort, though RAM will climb
+                submissionQueue.unshift(...batch);
+            }
         }
     } finally {
         isFlushing = false;
@@ -164,11 +179,16 @@ async function flushNow() {
                     `(duplicates discarded).`
                 );
             } else {
+                // Unexpected error during shutdown flush.
                 console.error('[SubmissionQueue] flushNow unexpected error:', err.message);
-                // Re-queue so at least we log the loss — we're shutting down, so
-                // the next attempt won't happen, but the log gives you the data.
-                submissionQueue.unshift(...batch);
-                break; // Avoid infinite loop on persistent DB failure
+                try {
+                    const logEntry = { timestamp: new Date().toISOString(), event: 'SHUTDOWN_FLUSH', error: err.message, batch };
+                    fs.appendFileSync(DEAD_LETTER_LOG, JSON.stringify(logEntry) + '\n', 'utf8');
+                    console.info('[SubmissionQueue] SHUTDOWN: Wrote failed batch to failed_submissions.log');
+                } catch (fsErr) {
+                    console.error('[SubmissionQueue] SHUTDOWN CRITICAL: Failed to write dead letter log.', fsErr.message);
+                }
+                break; // Avoid infinite loop on persistent DB failure during shutdown
             }
         }
     }

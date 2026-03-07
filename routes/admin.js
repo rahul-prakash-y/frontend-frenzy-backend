@@ -111,4 +111,24 @@ module.exports = async function (fastify, opts) {
         }
     });
 
+    /**
+     * 2. System Health - Queue Status (GET /api/admin/queue-status)
+     * Auth: Must use the requireAdmin hook.
+     * Used by the AdminDashboard System Health component to monitor the
+     * in-memory submissionQueue length. If this climbs, MongoDB writes are failing.
+     */
+    fastify.get('/queue-status', { preValidation: [fastify.requireAdmin] }, async (request, reply) => {
+        try {
+            const { getQueueLength } = require('../services/submissionQueue');
+            return reply.code(200).send({
+                success: true,
+                queueLength: getQueueLength(),
+                timestamp: new Date().toISOString()
+            });
+        } catch (error) {
+            fastify.log.error(error);
+            return reply.code(500).send({ error: 'Failed to fetch queue status' });
+        }
+    });
+
 };

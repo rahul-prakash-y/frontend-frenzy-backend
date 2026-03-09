@@ -501,13 +501,13 @@ module.exports = async function (fastify, opts) {
             let shouldBan = false;
             let reason = '';
 
-            // Using >= 1 for immediate disqualification as requested
-            if (submission.tabSwitches >= 1) {
+            // Loosened thresholds to prevent false positives on refresh/glitches
+            if (submission.tabSwitches >= 3) {
                 shouldBan = true;
                 reason = 'Anti-cheat threshold (Tab Switch) exceeded.';
-            } else if (submission.cheatFlags >= 1) {
+            } else if (submission.cheatFlags >= 3) {
                 shouldBan = true;
-                reason = 'Anti-cheat threshold (Copy-Paste detected) exceeded.';
+                reason = 'Anti-cheat threshold (Copy-Paste/Split-Screen) exceeded.';
             }
 
             if (shouldBan) {

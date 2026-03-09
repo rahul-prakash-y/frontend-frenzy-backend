@@ -83,6 +83,16 @@ const userSchema = new mongoose.Schema({
     type: String,
     trim: true,
     default: null
+  },
+  gender: {
+    type: String,
+    enum: ['Male', 'Female', 'Other', 'Prefer not to say'],
+    default: null
+  },
+  accommodation: {
+    type: String,
+    enum: ['Hostel', 'Dayscholar'],
+    default: null
   }
 }, {
   timestamps: true

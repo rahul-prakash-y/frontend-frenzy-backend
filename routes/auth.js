@@ -151,7 +151,7 @@ module.exports = async function (fastify, opts) {
      */
     fastify.post('/onboard', { preValidation: [fastify.authenticate] }, async (request, reply) => {
         try {
-            const { name, email, linkedinProfile, githubProfile, phone, bio, dob, password } = request.body;
+            const { name, email, linkedinProfile, githubProfile, phone, bio, dob, password, department, gender, accommodation } = request.body;
             if (!name || name.trim().length < 2) {
                 return reply.code(400).send({ error: 'Valid name is required' });
             }
@@ -164,6 +164,9 @@ module.exports = async function (fastify, opts) {
                 phone: phone ? phone.trim() : null,
                 bio: bio ? bio.trim() : null,
                 dob: dob ? new Date(dob) : null,
+                department: department ? department.trim() : null,
+                gender: gender || null,
+                accommodation: accommodation || null,
                 isOnboarded: true
             };
 
@@ -206,6 +209,76 @@ module.exports = async function (fastify, opts) {
         } catch (error) {
             fastify.log.error(error);
             return reply.code(500).send({ error: 'Failed to complete onboarding' });
+        }
+    });
+
+    /**
+     * ROUTE: GET /api/auth/profile
+     * Authenticated route for fetching user's full profile
+     */
+    fastify.get('/profile', { preValidation: [fastify.authenticate] }, async (request, reply) => {
+        try {
+            const user = await User.findById(request.user.userId).select('-password');
+            if (!user) return reply.code(404).send({ error: 'User not found' });
+
+            return reply.send({ success: true, profile: user });
+        } catch (error) {
+            fastify.log.error(error);
+            return reply.code(500).send({ error: 'Failed to fetch profile' });
+        }
+    });
+
+    /**
+     * ROUTE: PUT /api/auth/profile
+     * Authenticated route for updating user's profile
+     */
+    fastify.put('/profile', { preValidation: [fastify.authenticate] }, async (request, reply) => {
+        try {
+            const { name, email, linkedinProfile, githubProfile, phone, bio, dob, department, gender, accommodation } = request.body;
+
+            const updateData = {};
+            if (name) updateData.name = name.trim();
+            if (email !== undefined) updateData.email = email ? email.trim() : null;
+            if (linkedinProfile !== undefined) updateData.linkedinProfile = linkedinProfile ? linkedinProfile.trim() : null;
+            if (githubProfile !== undefined) updateData.githubProfile = githubProfile ? githubProfile.trim() : null;
+            if (phone !== undefined) updateData.phone = phone ? phone.trim() : null;
+            if (bio !== undefined) updateData.bio = bio ? bio.trim() : null;
+            if (dob !== undefined) updateData.dob = dob ? new Date(dob) : null;
+            if (department !== undefined) updateData.department = department ? department.trim() : null;
+            if (gender !== undefined) updateData.gender = gender || null;
+            if (accommodation !== undefined) updateData.accommodation = accommodation || null;
+
+            const user = await User.findByIdAndUpdate(
+                request.user.userId,
+                { $set: updateData },
+                { new: true, runValidators: true }
+            ).select('-password');
+
+            if (!user) return reply.code(404).send({ error: 'User not found' });
+
+            // Create a new token in case name was updated
+            const payload = {
+                userId: user._id,
+                studentId: user.studentId,
+                role: user.role,
+                name: user.name,
+                isBanned: user.isBanned,
+                banReason: user.banReason,
+                isOnboarded: user.isOnboarded
+            };
+            const token = fastify.jwt.sign(payload, { expiresIn: '12h' });
+
+            await logActivity({
+                action: 'UPDATED',
+                performedBy: { userId: user._id, studentId: user.studentId, name: user.name, role: user.role },
+                target: { type: 'User', id: user._id.toString(), label: `${user.studentId} — Profile Updated` },
+                ip: request.ip
+            });
+
+            return reply.send({ success: true, profile: user, token });
+        } catch (error) {
+            fastify.log.error(error);
+            return reply.code(500).send({ error: 'Failed to update profile' });
         }
     });
 

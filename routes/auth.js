@@ -75,7 +75,7 @@ module.exports = async function (fastify, opts) {
 
         } catch (error) {
             fastify.log.error(error);
-            return reply.code(500).send({ error: 'Internal Server Error during Authentication' });
+            return reply.code(500).send({ error: 'Internal Server Error during Authentication', message: error.message });
         }
     });
 

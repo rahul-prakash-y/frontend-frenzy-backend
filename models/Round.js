@@ -77,7 +77,15 @@ const roundSchema = new mongoose.Schema({
     allowedStudentIds: [{
         type: mongoose.Schema.Types.ObjectId,
         ref: 'User'
-    }]
+    }],
+    certificatesReleased: {
+        type: Boolean,
+        default: false
+    },
+    winnerLimit: {
+        type: Number,
+        default: 10
+    }
 }, {
     timestamps: true
 });

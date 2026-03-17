@@ -10,6 +10,9 @@ const { logActivity } = require('../utils/logger');
 const bcrypt = require('bcryptjs');
 const XLSX = require('xlsx');
 const PDFDocument = require('pdfkit-table');
+const JSZip = require('jszip');
+const fs = require('fs');
+const path = require('path');
 
 module.exports = async function (fastify, opts) {
 
@@ -2470,6 +2473,173 @@ module.exports = async function (fastify, opts) {
         } catch (error) {
             fastify.log.error(error);
             return reply.code(500).send({ error: 'Failed to generate team report' });
+        }
+    });
+
+    /**
+     * CERTIFICATE MANAGEMENT
+     */
+
+    // 1. POST /api/superadmin/certificates/template - UPLOAD TEMPLATE
+    fastify.post('/certificates/template', { preValidation: [fastify.requireSuperAdmin] }, async (request, reply) => {
+        try {
+            const data = await request.file();
+            if (!data) return reply.code(400).send({ error: 'No file uploaded' });
+
+            const uploadsDir = path.join(__dirname, '../uploads');
+            if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir);
+
+            const filePath = path.join(uploadsDir, 'certificate_template' + path.extname(data.filename));
+            
+            // Remove existing templates to avoid confusion
+            const files = fs.readdirSync(uploadsDir);
+            for (const file of files) {
+                if (file.startsWith('certificate_template')) {
+                    fs.unlinkSync(path.join(uploadsDir, file));
+                }
+            }
+
+            const buffer = await data.toBuffer();
+            fs.writeFileSync(filePath, buffer);
+
+            await logActivity({
+                action: 'UPDATED',
+                performedBy: { userId: request.user?.userId, name: request.user?.name, role: request.user?.role },
+                target: { type: 'Certificate', label: 'Updated Background Template' },
+                ip: request.ip
+            });
+
+            return reply.code(200).send({ success: true, message: 'Template uploaded successfully' });
+        } catch (error) {
+            fastify.log.error(error);
+            return reply.code(500).send({ error: 'Failed to upload template' });
+        }
+    });
+
+    // 2. GET /api/superadmin/certificates/template - GET CURRENT TEMPLATE PREVIEW
+    fastify.get('/certificates/template', { preValidation: [fastify.requireAdmin] }, async (request, reply) => {
+        try {
+            const uploadsDir = path.join(__dirname, '../uploads');
+            if (!fs.existsSync(uploadsDir)) return reply.code(404).send({ error: 'No template found' });
+
+            const files = fs.readdirSync(uploadsDir);
+            const templateFile = files.find(f => f.startsWith('certificate_template'));
+
+            if (!templateFile) return reply.code(404).send({ error: 'No template found' });
+
+            const buffer = fs.readFileSync(path.join(uploadsDir, templateFile));
+            reply.type('image/' + path.extname(templateFile).slice(1));
+            return reply.send(buffer);
+        } catch (error) {
+            fastify.log.error(error);
+            return reply.code(500).send({ error: 'Failed to fetch template' });
+        }
+    });
+
+    // 3. GET /api/superadmin/certificates/generate - GENERATE BULK PDF ZIP
+    fastify.get('/certificates/generate', { preValidation: [fastify.requireAdmin] }, async (request, reply) => {
+        try {
+            const { roundId, limit = 10 } = request.query;
+            if (!roundId) return reply.code(400).send({ error: 'roundId is required' });
+
+            const round = await Round.findById(roundId);
+            if (!round) return reply.code(404).send({ error: 'Round not found' });
+
+            const uploadsDir = path.join(__dirname, '../uploads');
+            const files = fs.readdirSync(uploadsDir);
+            const templateFile = files.find(f => f.startsWith('certificate_template'));
+
+            if (!templateFile) return reply.code(400).send({ error: 'Please upload a certificate template first' });
+            const templatePath = path.join(uploadsDir, templateFile);
+
+            // Fetch top winners
+            const submissions = await Submission.find({ round: roundId, status: 'SUBMITTED' })
+                .sort({ score: -1 })
+                .limit(Number(limit))
+                .populate('student', 'name studentId');
+
+            if (submissions.length === 0) return reply.code(404).send({ error: 'No submissions found for this round' });
+
+            const zip = new JSZip();
+
+            for (const sub of submissions) {
+                const studentName = sub.student?.name || 'Student';
+                
+                // Create PDF using PDFKit
+                const doc = new PDFDocument({
+                    layout: 'landscape',
+                    size: 'A4',
+                    margin: 0
+                });
+
+                // Buffer to collect PDF data
+                const chunks = [];
+                doc.on('data', chunk => chunks.push(chunk));
+
+                // Add template background
+                doc.image(templatePath, 0, 0, { width: doc.page.width, height: doc.page.height });
+
+                // Add Student Name - Centered vertically and horizontally (Customizable in future)
+                doc.font('Helvetica-Bold').fontSize(40).fillColor('#1e293b');
+                
+                // Draw text in middle
+                const textWidth = doc.widthOfString(studentName);
+                const x = (doc.page.width - textWidth) / 2;
+                const y = doc.page.height / 2.2;
+
+                doc.text(studentName, x, y);
+
+                doc.end();
+
+                // Wait for PDF to finish
+                const pdfBuffer = await new Promise((resolve) => {
+                    doc.on('end', () => resolve(Buffer.concat(chunks)));
+                });
+
+                zip.file(`${sub.student?.studentId || 'unknown'}_certificate.pdf`, pdfBuffer);
+            }
+
+            const zipBuffer = await zip.generateAsync({ type: 'nodebuffer' });
+
+            reply.header('Content-Type', 'application/zip');
+            reply.header('Content-Disposition', `attachment; filename=${round.name.replace(/\s+/g, '_')}_certificates.zip`);
+            return reply.send(zipBuffer);
+
+        } catch (error) {
+            fastify.log.error(error);
+            return reply.code(500).send({ error: 'Failed to generate certificates' });
+        }
+    });
+
+    // 4. PATCH /api/superadmin/rounds/:roundId/release-certificates - TOGGLE RELEASE
+    fastify.patch('/rounds/:roundId/release-certificates', { preValidation: [fastify.requireAdmin] }, async (request, reply) => {
+        try {
+            const { roundId } = request.params;
+            const { released, limit } = request.body;
+
+            const round = await Round.findById(roundId);
+            if (!round) return reply.code(404).send({ error: 'Round not found' });
+
+            round.certificatesReleased = released !== undefined ? released : !round.certificatesReleased;
+            if (limit !== undefined) round.winnerLimit = limit;
+
+            await round.save();
+
+            await logActivity({
+                action: 'UPDATED',
+                performedBy: { userId: request.user?.userId, name: request.user?.name, role: request.user?.role },
+                target: { type: 'Round', id: roundId, label: `Certificates ${round.certificatesReleased ? 'RELEASED' : 'REVOKED'}` },
+                ip: request.ip
+            });
+
+            return reply.code(200).send({ 
+                success: true, 
+                message: `Certificates ${round.certificatesReleased ? 'released' : 'revoked'} successfully`,
+                data: { certificatesReleased: round.certificatesReleased, winnerLimit: round.winnerLimit }
+            });
+        } catch (error) {
+            fastify.log.error(error);
+            return reply.code(500).send({ error: 'Failed to update certificate release status' });
         }
     });
 

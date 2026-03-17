@@ -6,6 +6,9 @@ const User = require('../models/User');
 const AdminOTP = require('../models/AdminOTP');
 const { logActivity } = require('../utils/logger');
 const { isStudentEligible } = require('../utils/eligibility');
+const fs = require('fs');
+const path = require('path');
+const PDFDocument = require('pdfkit-table');
 
 // Helper to generate a secure 6-digit OTP
 const generateOtp = () => {
@@ -24,18 +27,35 @@ module.exports = async function (fastify, opts) {
                 .select('-startOtp -endOtp -otpIssuedAt')
                 .sort({ createdAt: -1 })
                 .lean();
+            // Check if a global certificate template exists
+            const uploadsDir = path.join(__dirname, '../uploads');
+            const templateExists = fs.existsSync(uploadsDir) && fs.readdirSync(uploadsDir).some(f => f.startsWith('certificate_template'));
+
             const studentId = request.user.userId;
 
             // Enrich rounds with the student's submission status & eligibility
             const enrichedRounds = await Promise.all(rounds.map(async (round) => {
                 const [submission, eligibility] = await Promise.all([
-                    Submission.findOne({ student: studentId, round: round._id }).select('status'),
+                    Submission.findOne({ student: studentId, round: round._id }).select('status score'),
                     isStudentEligible(studentId, round._id)
                 ]);
+
+                // Determine if student is a "winner" if certificates are released
+                let isWinner = false;
+                if (round.certificatesReleased && submission && (submission.status === 'SUBMITTED' || submission.status === 'COMPLETED')) {
+                    const topSubmissions = await Submission.find({ round: round._id, status: 'SUBMITTED' })
+                        .sort({ score: -1 })
+                        .limit(round.winnerLimit || 10)
+                        .select('student');
+                    isWinner = topSubmissions.some(s => s.student.toString() === studentId);
+                }
+
                 return {
                     ...round,
                     mySubmissionStatus: submission ? submission.status : null,
-                    eligibility
+                    eligibility,
+                    isWinner,
+                    hasCertificate: isWinner && round.certificatesReleased && templateExists
                 };
             }));
 
@@ -43,6 +63,79 @@ module.exports = async function (fastify, opts) {
         } catch (error) {
             fastify.log.error(error);
             return reply.code(500).send({ error: 'Failed to fetch rounds' });
+        }
+    });
+
+    /**
+     * GET /api/rounds/:roundId/certificate
+     * Student can download their own certificate if the round has released them and they qualify.
+     */
+    fastify.get('/:roundId/certificate', { preValidation: [fastify.authenticate] }, async (request, reply) => {
+        try {
+            const { roundId } = request.params;
+            const studentId = request.user.userId;
+
+            const round = await Round.findById(roundId);
+            if (!round) return reply.code(404).send({ error: 'Round not found' });
+
+            if (!round.certificatesReleased) {
+                return reply.code(403).send({ error: 'Certificates have not been released for this round yet.' });
+            }
+
+            // Verify if student is a "winner" (Top N)
+            const submissions = await Submission.find({ round: roundId, status: 'SUBMITTED' })
+                .sort({ score: -1 })
+                .limit(round.winnerLimit || 10)
+                .select('student');
+
+            const isWinner = submissions.some(s => s.student.toString() === studentId);
+            if (!isWinner) {
+                return reply.code(403).send({ error: 'Certificate only available for top winners.' });
+            }
+
+            // Generate the certificate
+            const uploadsDir = path.join(__dirname, '../uploads');
+            if (!fs.existsSync(uploadsDir)) return reply.code(500).send({ error: 'Server misconfiguration: uploads folder missing.' });
+            
+            const files = fs.readdirSync(uploadsDir);
+            const templateFile = files.find(f => f.startsWith('certificate_template'));
+
+            if (!templateFile) return reply.code(500).send({ error: 'Certificate template missing on server.' });
+            const templatePath = path.join(uploadsDir, templateFile);
+
+            const user = await User.findById(studentId);
+            const studentName = user?.name || 'Student';
+
+            const doc = new PDFDocument({
+                layout: 'landscape',
+                size: 'A4',
+                margin: 0
+            });
+
+            const chunks = [];
+            doc.on('data', chunk => chunks.push(chunk));
+
+            doc.image(templatePath, 0, 0, { width: doc.page.width, height: doc.page.height });
+            doc.font('Helvetica-Bold').fontSize(40).fillColor('#1e293b');
+            
+            const textWidth = doc.widthOfString(studentName);
+            const x = (doc.page.width - textWidth) / 2;
+            const y = doc.page.height / 2.2;
+
+            doc.text(studentName, x, y);
+            doc.end();
+
+            const pdfBuffer = await new Promise((resolve) => {
+                doc.on('end', () => resolve(Buffer.concat(chunks)));
+            });
+
+            reply.header('Content-Type', 'application/pdf');
+            reply.header('Content-Disposition', `attachment; filename=${studentName.replace(/\s+/g, '_')}_certificate.pdf`);
+            return reply.send(pdfBuffer);
+
+        } catch (error) {
+            fastify.log.error(error);
+            return reply.code(500).send({ error: 'Failed to download certificate' });
         }
     });
 

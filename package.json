@@ -27,6 +27,7 @@
     "fastify-plugin": "^5.1.0",
     "json2csv": "^6.0.0-alpha.2",
     "jsonwebtoken": "^9.0.3",
+    "jszip": "^3.10.1",
     "mongoose": "^9.2.3",
     "pdf-lib": "^1.17.1",
     "pdfkit": "^0.17.2",

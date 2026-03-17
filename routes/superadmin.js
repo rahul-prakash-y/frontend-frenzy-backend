@@ -26,7 +26,7 @@ module.exports = async function (fastify, opts) {
                 name, description, durationMinutes, type,
                 questionCount, shuffleQuestions,
                 testGroupId, testDurationMinutes, roundOrder,
-                maxParticipants
+                maxParticipants, startTime, endTime
             } = request.body;
 
             if (!name) return reply.code(400).send({ error: 'Round name is required' });
@@ -43,7 +43,9 @@ module.exports = async function (fastify, opts) {
                 testGroupId: testGroupId || null,
                 testDurationMinutes: testDurationMinutes || null,
                 roundOrder: roundOrder || 1,
-                maxParticipants: maxParticipants || null
+                maxParticipants: maxParticipants || null,
+                startTime: startTime || null,
+                endTime: endTime || null
             });
 
             const savedRound = await round.save();
@@ -2152,7 +2154,7 @@ module.exports = async function (fastify, opts) {
      */
     fastify.patch('/rounds/:roundId/status', { preValidation: [fastify.requireAdmin] }, async (request, reply) => {
         const { roundId } = request.params;
-        const { status, isOtpActive, durationMinutes, maxParticipants } = request.body;
+        const { status, isOtpActive, durationMinutes, maxParticipants, startTime, endTime } = request.body;
 
         try {
             const updates = {};
@@ -2160,6 +2162,8 @@ module.exports = async function (fastify, opts) {
             if (isOtpActive !== undefined) updates.isOtpActive = isOtpActive;
             if (durationMinutes !== undefined) updates.durationMinutes = durationMinutes;
             if (maxParticipants !== undefined) updates.maxParticipants = maxParticipants;
+            if (startTime !== undefined) updates.startTime = startTime;
+            if (endTime !== undefined) updates.endTime = endTime;
 
             const round = await Round.findByIdAndUpdate(roundId, updates, { new: true }).select('-startOtp -endOtp -otpIssuedAt');
             if (!round) return reply.code(404).send({ error: 'Round not found' });

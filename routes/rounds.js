@@ -355,6 +355,21 @@ module.exports = async function (fastify, opts) {
         try {
             const round = await Round.findById(roundId);
             if (!round) return reply.code(404).send({ error: 'Round not found' });
+ 
+            // ─── Time Window Check ──────────────────────────────────────────────────
+            const now = new Date();
+            if (round.startTime && now < new Date(round.startTime)) {
+                return reply.code(403).send({
+                    error: 'Test Not Started',
+                    message: `This test is scheduled to start at ${new Date(round.startTime).toLocaleString()}.`
+                });
+            }
+            if (round.endTime && now > new Date(round.endTime)) {
+                return reply.code(403).send({
+                    error: 'Test Ended',
+                    message: `This test ended at ${new Date(round.endTime).toLocaleString()}.`
+                });
+            }
 
             // ─── Participation Eligibility Check ─────────────────────────────────────
             const eligibility = await isStudentEligible(studentId, roundId);
@@ -501,15 +516,28 @@ module.exports = async function (fastify, opts) {
             const now = new Date();
             const elapsedMinutes = (now - new Date(submission.startTime)) / 1000 / 60;
             const durationAllowed = round.testGroupId ? round.testDurationMinutes : round.durationMinutes;
-            const bufferedDuration = durationAllowed + (submission.extraTimeMinutes || 0) + 2;
+            const extraMinutes = submission.extraTimeMinutes || 0;
+            const bufferedDuration = durationAllowed + extraMinutes + 2;
 
             if (elapsedMinutes > bufferedDuration) {
                 // Automatically disqualify for timing out completely and skipping front-end guards
                 submission.status = 'DISQUALIFIED';
-                submission.disqualificationReason = 'Submission timed out beyond server limits';
+                submission.disqualificationReason = 'Submission timed out beyond duration limits';
                 submission.endTime = now;
                 await submission.save();
                 return reply.code(403).send({ error: 'Time limit exceeded. Disqualified.' });
+            }
+
+            // Enforce the Test Window End Time
+            if (round.endTime) {
+                const windowEndWithExtra = new Date(new Date(round.endTime).getTime() + (extraMinutes * 60 * 1000) + (2 * 60 * 1000));
+                if (now > windowEndWithExtra) {
+                    submission.status = 'DISQUALIFIED';
+                    submission.disqualificationReason = 'Submission timed out beyond test window limits';
+                    submission.endTime = now;
+                    await submission.save();
+                    return reply.code(403).send({ error: 'Test window ended. Disqualified.' });
+                }
             }
 
             // Successful Submission

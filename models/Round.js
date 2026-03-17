@@ -85,6 +85,14 @@ const roundSchema = new mongoose.Schema({
     winnerLimit: {
         type: Number,
         default: 10
+    },
+    startTime: {
+        type: Date,
+        default: null
+    },
+    endTime: {
+        type: Date,
+        default: null
     }
 }, {
     timestamps: true

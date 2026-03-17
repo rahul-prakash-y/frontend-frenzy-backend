@@ -6,6 +6,11 @@ const attendanceOTPSchema = new mongoose.Schema({
         ref: 'User',
         required: true
     },
+    roundId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Round',
+        default: null
+    },
     otp: {
         type: String,
         required: true,

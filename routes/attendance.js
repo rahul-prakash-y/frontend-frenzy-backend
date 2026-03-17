@@ -8,20 +8,28 @@ module.exports = async function (fastify, opts) {
     fastify.post('/generate', { preValidation: [fastify.requireAdmin] }, async (request, reply) => {
         try {
             const adminId = request.user.userId;
+            const { roundId } = request.body || {};
+
+            if (!roundId) {
+                return reply.code(400).send({ error: 'Round ID is required to generate attendance OTP for a specific round' });
+            }
 
             // Random 6-digit OTP
             const otp = Math.floor(100000 + Math.random() * 900000).toString();
 
-            // OTP valid for 10 minutes
-            const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+            // OTP valid for 1 minute
+            const expiresAt = new Date(Date.now() + 1 * 60 * 1000);
 
-            // Deactivate any existing OTPs for this admin
-            await AttendanceOTP.updateMany({ adminId, isActive: true }, { isActive: false });
+            // Deactivate any existing OTPs for this admin (for this round if specified, else all)
+            const deactivateFilter = { adminId, isActive: true };
+            if (roundId) deactivateFilter.roundId = roundId;
+            await AttendanceOTP.updateMany(deactivateFilter, { isActive: false });
 
             const newOtp = new AttendanceOTP({
                 adminId,
                 otp,
-                expiresAt
+                expiresAt,
+                roundId: roundId || null
             });
 
             await newOtp.save();
@@ -31,7 +39,8 @@ module.exports = async function (fastify, opts) {
                 data: {
                     otp,
                     expiresAt,
-                    secondsLeft: 600
+                    secondsLeft: 60,
+                    roundId: roundId || null
                 }
             });
         } catch (error) {
@@ -44,11 +53,16 @@ module.exports = async function (fastify, opts) {
     fastify.get('/active', { preValidation: [fastify.requireAdmin] }, async (request, reply) => {
         try {
             const adminId = request.user.userId;
-            const activeOtp = await AttendanceOTP.findOne({
+            const { roundId } = request.query;
+
+            const filter = {
                 adminId,
                 isActive: true,
                 expiresAt: { $gt: new Date() }
-            });
+            };
+            if (roundId) filter.roundId = roundId;
+
+            const activeOtp = await AttendanceOTP.findOne(filter);
 
             if (!activeOtp) {
                 return reply.send({ success: false, message: 'No active OTP found' });
@@ -61,7 +75,8 @@ module.exports = async function (fastify, opts) {
                 data: {
                     otp: activeOtp.otp,
                     expiresAt: activeOtp.expiresAt,
-                    secondsLeft
+                    secondsLeft,
+                    roundId: activeOtp.roundId || null
                 }
             });
         } catch (error) {
@@ -89,11 +104,11 @@ module.exports = async function (fastify, opts) {
                 return reply.code(400).send({ error: 'Invalid or expired OTP' });
             }
 
-            // Check if already marked today for this specific admin session
-            // For now, let's just mark it.
+            // Create attendance record; carry over roundId from the OTP if present
             const attendance = new Attendance({
                 student: studentId,
-                markedBy: activeOtp.adminId
+                markedBy: activeOtp.adminId,
+                round: activeOtp.roundId || null
             });
 
             await attendance.save();
@@ -101,7 +116,7 @@ module.exports = async function (fastify, opts) {
             await logActivity({
                 action: 'ATTENDANCE_MARKED',
                 performedBy: { userId: request.user.userId, studentId: request.user.studentId, name: request.user.name, role: request.user.role },
-                target: { type: 'Attendance', id: attendance._id.toString(), label: `Marked by ${activeOtp.adminId}` },
+                target: { type: 'Attendance', id: attendance._id.toString(), label: `Marked by ${activeOtp.adminId}${activeOtp.roundId ? ` for round ${activeOtp.roundId}` : ''}` },
                 ip: request.ip
             });
 

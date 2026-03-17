@@ -11,6 +11,11 @@ const attendanceSchema = new mongoose.Schema({
         ref: 'User',
         required: true
     },
+    round: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Round',
+        default: null
+    },
     timestamp: {
         type: Date,
         default: Date.now

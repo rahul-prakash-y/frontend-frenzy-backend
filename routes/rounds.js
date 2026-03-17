@@ -27,6 +27,7 @@ module.exports = async function (fastify, opts) {
                 .select('-startOtp -endOtp -otpIssuedAt')
                 .sort({ createdAt: -1 })
                 .lean();
+
             // Check if a global certificate template exists
             const uploadsDir = path.join(__dirname, '../uploads');
             const templateExists = fs.existsSync(uploadsDir) && fs.readdirSync(uploadsDir).some(f => f.startsWith('certificate_template'));
@@ -43,13 +44,22 @@ module.exports = async function (fastify, opts) {
                 // Determine if student is a "winner" if certificates are released
                 let isWinner = false;
                 if (round.certificatesReleased && submission && (submission.status === 'SUBMITTED' || submission.status === 'COMPLETED')) {
-                    const topSubmissions = await Submission.find({ round: round._id, status: 'SUBMITTED' })
+                    // Check persistent DB flag first
+                    if (submission.hasCertificate) {
+                        isWinner = true;
+                    } else {
+                        // Fallback/Safety: Recalculate if flag not set but they might be a winner
+                        const topSubmissions = await Submission.find({ 
+                            round: round._id, 
+                            status: { $in: ['SUBMITTED', 'COMPLETED'] } 
+                        })
                         .sort({ score: -1 })
                         .limit(round.winnerLimit || 10)
                         .select('student');
-                    isWinner = topSubmissions.some(s => s.student.toString() === studentId);
+                        
+                        isWinner = topSubmissions.some(s => s.student.toString() === studentId);
+                    }
                 }
-
                 return {
                     ...round,
                     mySubmissionStatus: submission ? submission.status : null,
@@ -83,7 +93,10 @@ module.exports = async function (fastify, opts) {
             }
 
             // Verify if student is a "winner" (Top N)
-            const submissions = await Submission.find({ round: roundId, status: 'SUBMITTED' })
+            const submissions = await Submission.find({ 
+                round: roundId, 
+                status: { $in: ['SUBMITTED', 'COMPLETED'] } 
+            })
                 .sort({ score: -1 })
                 .limit(round.winnerLimit || 10)
                 .select('student');
@@ -95,8 +108,6 @@ module.exports = async function (fastify, opts) {
 
             // Generate the certificate
             const uploadsDir = path.join(__dirname, '../uploads');
-            if (!fs.existsSync(uploadsDir)) return reply.code(500).send({ error: 'Server misconfiguration: uploads folder missing.' });
-            
             const files = fs.readdirSync(uploadsDir);
             const templateFile = files.find(f => f.startsWith('certificate_template'));
 

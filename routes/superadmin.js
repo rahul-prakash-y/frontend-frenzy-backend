@@ -919,7 +919,40 @@ module.exports = async function (fastify, opts) {
             }
             submission.score = finalScore;
 
+            // NEW: Check if all manual questions for this round have been graded
+            const manualQuestions = await Question.find({ round: submission.round, isManualEvaluation: true });
+            const gradedQuestionIds = submission.manualScores.map(ms => ms.questionId?.toString());
+            const allGraded = manualQuestions.every(q => gradedQuestionIds.includes(q._id.toString()));
+
+            if (allGraded && submission.status === 'SUBMITTED') {
+                submission.status = 'COMPLETED';
+            }
+
             await submission.save();
+
+            // RECALCULATE WINNERS for this round if certificates are released
+            if (round && round.certificatesReleased) {
+                // Clear existing winners first
+                await Submission.updateMany({ round: submission.round }, { hasCertificate: false });
+
+                // Find new top N
+                // Include BOTH SUBMITTED and COMPLETED statuses
+                const winners = await Submission.find({ 
+                    round: submission.round, 
+                    status: { $in: ['SUBMITTED', 'COMPLETED'] } 
+                })
+                .sort({ score: -1 })
+                .limit(round.winnerLimit || 10)
+                .select('_id');
+
+                const winnerIds = winners.map(w => w._id);
+                if (winnerIds.length > 0) {
+                    await Submission.updateMany(
+                        { _id: { $in: winnerIds } },
+                        { hasCertificate: true }
+                    );
+                }
+            }
 
             // Invalidate ranking cache since scores have changed
             const { invalidateRankingCache } = require('../utils/eligibility');
@@ -2625,6 +2658,29 @@ module.exports = async function (fastify, opts) {
 
             await round.save();
 
+            // Update hasCertificate flags for all submissions in this round
+            // Clear all flags first
+            await Submission.updateMany({ round: roundId }, { hasCertificate: false });
+
+            if (round.certificatesReleased) {
+                // Find Top N winners
+                const winners = await Submission.find({ 
+                    round: roundId, 
+                    status: { $in: ['SUBMITTED', 'COMPLETED'] } 
+                })
+                .sort({ score: -1 })
+                .limit(round.winnerLimit || 10)
+                .select('_id');
+
+                const winnerIds = winners.map(w => w._id);
+                if (winnerIds.length > 0) {
+                    await Submission.updateMany(
+                        { _id: { $in: winnerIds } },
+                        { hasCertificate: true }
+                    );
+                }
+            }
+
             await logActivity({
                 action: 'UPDATED',
                 performedBy: { userId: request.user?.userId, name: request.user?.name, role: request.user?.role },
@@ -2642,5 +2698,6 @@ module.exports = async function (fastify, opts) {
             return reply.code(500).send({ error: 'Failed to update certificate release status' });
         }
     });
+
 
 };

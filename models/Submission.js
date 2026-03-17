@@ -14,7 +14,7 @@ const submissionSchema = new mongoose.Schema({
     // Track status per student for this round
     status: {
         type: String,
-        enum: ['NOT_STARTED', 'IN_PROGRESS', 'SUBMITTED', 'DISQUALIFIED'],
+        enum: ['NOT_STARTED', 'IN_PROGRESS', 'SUBMITTED', 'DISQUALIFIED', 'COMPLETED'],
         default: 'NOT_STARTED'
     },
     startTime: {
@@ -84,6 +84,10 @@ const submissionSchema = new mongoose.Schema({
         type: mongoose.Schema.Types.ObjectId,
         ref: 'User',
         default: null
+    },
+    hasCertificate: {
+        type: Boolean,
+        default: false
     }
 }, {
     timestamps: true

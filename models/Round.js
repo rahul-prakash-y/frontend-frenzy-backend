@@ -87,8 +87,8 @@ const roundSchema = new mongoose.Schema({
         default: 10
     },
     certificateTemplate: {
-        type: String, // Filename in uploads directory
-        default: null
+         data: Buffer,
+        contentType: String
     },
     startTime: {
         type: Date,

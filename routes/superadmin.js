@@ -84,31 +84,28 @@ module.exports = async function (fastify, opts) {
                 fs.mkdirSync(uploadsDir, { recursive: true });
             }
 
-            const filename = `template_${roundId}_${Date.now()}.pdf`;
-            const filePath = path.join(uploadsDir, filename);
-            
-            // Save file
-            const buffer = await data.toBuffer();
-            fs.writeFileSync(filePath, buffer);
+           // Save to DB
+            const round = await Round.findByIdAndUpdate(roundId, { 
+                certificateTemplate: {
+                    data: buffer,
+                    contentType: data.mimetype
+                } 
+            }, { new: true });
 
-            const round = await Round.findByIdAndUpdate(roundId, { certificateTemplate: filename }, { new: true });
-            if (!round) {
-                // Cleanup file if round not found
-                if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
-                return reply.code(404).send({ error: 'Round not found' });
-            }
+            if (!round) return reply.code(404).send({ error: 'Round not found' });
+
 
             await logActivity({
                 action: 'UPLOADED',
                 performedBy: { userId: request.user?.userId, name: request.user?.name, role: request.user?.role },
-                target: { type: 'Round', id: roundId, label: `Certificate template for ${round.name}` },
+               target: { type: 'Round', id: roundId, label: `Certificate template for ${round.name} (Stored in DB)` },
                 ip: request.ip
             });
 
             return reply.code(200).send({ success: true, message: 'Certificate template uploaded successfully', data: { certificateTemplate: filename } });
         } catch (error) {
             fastify.log.error(error);
-            return reply.code(500).send({ error: 'Failed to upload certificate template' });
+            return reply.code(500).send({ error: 'Failed to upload certificate template to DB' });
         }
     });
 
@@ -2601,24 +2598,21 @@ module.exports = async function (fastify, opts) {
         }
     });
 
-    // 2. GET /api/superadmin/rounds/:roundId/certificate-template - GET ROUND TEMPLATE PREVIEW
+    // 2. GET /api/superadmin/rounds/:roundId/certificate-template - GET ROUND TEMPLATE PREVIEW FROM DB
     fastify.get('/rounds/:roundId/certificate-template', { preValidation: [fastify.requireAdmin] }, async (request, reply) => {
         try {
             const { roundId } = request.params;
             const round = await Round.findById(roundId);
-            if (!round || !round.certificateTemplate) return reply.code(404).send({ error: 'No template found for this round' });
+            if (!round || !round.certificateTemplate || !round.certificateTemplate.data) {
+                return reply.code(404).send({ error: 'No template found in DB for this round' });
+            }
 
+            reply.type(round.certificateTemplate.contentType || 'application/pdf');
+            return reply.send(round.certificateTemplate.data);
 
-           const filePath = path.join(uploadsDir, round.certificateTemplate);
-
-            if (!fs.existsSync(filePath)) return reply.code(404).send({ error: 'Template file missing on server' });
-
-            const buffer = fs.readFileSync(filePath);
-            reply.type('application/pdf'); // It's a PDF now
-            return reply.send(buffer);
         } catch (error) {
             fastify.log.error(error);
-            return reply.code(500).send({ error: 'Failed to fetch template' });
+            return reply.code(500).send({ error: 'Failed to fetch template from DB' });
         }
     });
 
@@ -2650,13 +2644,10 @@ module.exports = async function (fastify, opts) {
             const round = await Round.findById(roundId);
             if (!round) return reply.code(404).send({ error: 'Round not found' });
 
-            const uploadsDir = path.join(__dirname, '../uploads');
             const templateFile = round.certificateTemplate;
 
-            if (!templateFile) return reply.code(400).send({ error: 'Please upload a certificate template for this round first' });
-            const templatePath = path.join(uploadsDir, templateFile);
-
-            if (!fs.existsSync(templatePath)) return reply.code(500).send({ error: 'Template file missing on server' });
+            if (!templateFile || !templateFile.data) return reply.code(400).send({ error: 'Please upload a certificate template to DB for this round first' });
+            const templateBuffer = templateFile.data;
 
             // Fetch top winners
             const submissions = await Submission.find({ round: roundId, status: 'SUBMITTED' })
@@ -2683,7 +2674,7 @@ module.exports = async function (fastify, opts) {
                 doc.on('data', chunk => chunks.push(chunk));
 
                 // Add template background
-                doc.image(templatePath, 0, 0, { width: doc.page.width, height: doc.page.height });
+                doc.image(templateBuffer, 0, 0, { width: doc.page.width, height: doc.page.height });
 
                 // Add Student Name - Centered vertically and horizontally (Customizable in future)
                 doc.font('Helvetica-Bold').fontSize(40).fillColor('#1e293b');

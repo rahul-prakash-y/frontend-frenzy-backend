@@ -91,7 +91,7 @@ const userSchema = new mongoose.Schema({
   },
   accommodation: {
     type: String,
-    enum: ['Hostel', 'Dayscholar'],
+    enum: ['Hostel', 'Day Scholar'],
     default: null
   }
 }, {

@@ -25,15 +25,14 @@ module.exports = async function (fastify, opts) {
         try {
             const studentId = request.user.userId;
 
-            // Find all rounds that have certificates released
-            const rounds = await Round.find({ certificatesReleased: true }).lean();
+            // Find all rounds that have certificates released and a template assigned
+            const rounds = await Round.find({ 
+                certificatesReleased: true,
+                certificateTemplate: { $ne: null }
+            }).lean();
+
             if (!rounds.length) return reply.send({ success: true, data: [] });
 
-            // Check if a global certificate template exists
-            const uploadsDir = path.join(__dirname, '../uploads');
-            const templateExists = fs.existsSync(uploadsDir) && fs.readdirSync(uploadsDir).some(f => f.startsWith('certificate_template'));
-
-            if (!templateExists) return reply.send({ success: true, data: [] });
 
             const roundIds = rounds.map(r => r._id);
 
@@ -95,11 +94,9 @@ module.exports = async function (fastify, opts) {
                 .sort({ createdAt: -1 })
                 .lean();
 
-            // Check if a global certificate template exists
-            const uploadsDir = path.join(__dirname, '../uploads');
-            const templateExists = fs.existsSync(uploadsDir) && fs.readdirSync(uploadsDir).some(f => f.startsWith('certificate_template'));
-
             const studentId = request.user.userId;
+            const uploadsDir = path.join(__dirname, '../uploads');
+            
 
             // Enrich rounds with the student's submission status & eligibility
             const enrichedRounds = await Promise.all(rounds.map(async (round) => {
@@ -132,7 +129,7 @@ module.exports = async function (fastify, opts) {
                     mySubmissionStatus: submission ? submission.status : null,
                     eligibility,
                     isWinner,
-                    hasCertificate: isWinner && round.certificatesReleased && templateExists
+                    hasCertificate: isWinner && round.certificatesReleased && round.certificateTemplate
                 };
             }));
 
@@ -175,11 +172,14 @@ module.exports = async function (fastify, opts) {
 
             // Generate the certificate
             const uploadsDir = path.join(__dirname, '../uploads');
-            const files = fs.readdirSync(uploadsDir);
-            const templateFile = files.find(f => f.startsWith('certificate_template'));
+            const templateFile = round.certificateTemplate;
 
-            if (!templateFile) return reply.code(500).send({ error: 'Certificate template missing on server.' });
-            const templatePath = path.join(uploadsDir, templateFile);
+           if (!templateFile) return reply.code(400).send({ error: 'Certificate template not assigned for this round.' });
+           const templatePath = path.join(uploadsDir, templateFile);
+
+            if (!fs.existsSync(templatePath)) {
+                return reply.code(500).send({ error: 'Certificate template file missing on server.' });
+            }
 
             const user = await User.findById(studentId);
             const studentName = user?.name || 'Student';

@@ -86,6 +86,10 @@ const roundSchema = new mongoose.Schema({
         type: Number,
         default: 10
     },
+    certificateTemplate: {
+        type: String, // Filename in uploads directory
+        default: null
+    },
     startTime: {
         type: Date,
         default: null

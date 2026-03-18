@@ -66,6 +66,54 @@ module.exports = async function (fastify, opts) {
     });
 
     /**
+     * POST /api/superadmin/rounds/:roundId/certificate-template
+     * Upload a PDF template for a specific round.
+     */
+    fastify.post('/rounds/:roundId/certificate-template', { preValidation: [fastify.requireSuperAdmin] }, async (request, reply) => {
+        try {
+            const { roundId } = request.params;
+            const data = await request.file();
+            if (!data) return reply.code(400).send({ error: 'No PDF file uploaded' });
+
+            if (data.mimetype !== 'application/pdf') {
+                return reply.code(400).send({ error: 'Only PDF files are allowed as certificate templates' });
+            }
+
+            const uploadsDir = path.join(__dirname, '../uploads');
+            if (!fs.existsSync(uploadsDir)) {
+                fs.mkdirSync(uploadsDir, { recursive: true });
+            }
+
+            const filename = `template_${roundId}_${Date.now()}.pdf`;
+            const filePath = path.join(uploadsDir, filename);
+            
+            // Save file
+            const buffer = await data.toBuffer();
+            fs.writeFileSync(filePath, buffer);
+
+            const round = await Round.findByIdAndUpdate(roundId, { certificateTemplate: filename }, { new: true });
+            if (!round) {
+                // Cleanup file if round not found
+                if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+                return reply.code(404).send({ error: 'Round not found' });
+            }
+
+            await logActivity({
+                action: 'UPLOADED',
+                performedBy: { userId: request.user?.userId, name: request.user?.name, role: request.user?.role },
+                target: { type: 'Round', id: roundId, label: `Certificate template for ${round.name}` },
+                ip: request.ip
+            });
+
+            return reply.code(200).send({ success: true, message: 'Certificate template uploaded successfully', data: { certificateTemplate: filename } });
+        } catch (error) {
+            fastify.log.error(error);
+            return reply.code(500).send({ error: 'Failed to upload certificate template' });
+        }
+    });
+
+
+    /**
      * 1. GET /api/superadmin/audit-logs
      * Returns all submissions across all rounds, enriched with student + round info.
      */
@@ -2553,11 +2601,31 @@ module.exports = async function (fastify, opts) {
         }
     });
 
-    // 2. GET /api/superadmin/certificates/template - GET CURRENT TEMPLATE PREVIEW
+    // 2. GET /api/superadmin/rounds/:roundId/certificate-template - GET ROUND TEMPLATE PREVIEW
+    fastify.get('/rounds/:roundId/certificate-template', { preValidation: [fastify.requireAdmin] }, async (request, reply) => {
+        try {
+            const { roundId } = request.params;
+            const round = await Round.findById(roundId);
+            if (!round || !round.certificateTemplate) return reply.code(404).send({ error: 'No template found for this round' });
+
+
+           const filePath = path.join(uploadsDir, round.certificateTemplate);
+
+            if (!fs.existsSync(filePath)) return reply.code(404).send({ error: 'Template file missing on server' });
+
+            const buffer = fs.readFileSync(filePath);
+            reply.type('application/pdf'); // It's a PDF now
+            return reply.send(buffer);
+        } catch (error) {
+            fastify.log.error(error);
+            return reply.code(500).send({ error: 'Failed to fetch template' });
+        }
+    });
+
+    // Legacy Global Preview (Optional, can keep for backward compatibility or remove)
     fastify.get('/certificates/template', { preValidation: [fastify.requireAdmin] }, async (request, reply) => {
         try {
             const uploadsDir = path.join(__dirname, '../uploads');
-            if (!fs.existsSync(uploadsDir)) return reply.code(404).send({ error: 'No template found' });
 
             const files = fs.readdirSync(uploadsDir);
             const templateFile = files.find(f => f.startsWith('certificate_template'));
@@ -2565,7 +2633,7 @@ module.exports = async function (fastify, opts) {
             if (!templateFile) return reply.code(404).send({ error: 'No template found' });
 
             const buffer = fs.readFileSync(path.join(uploadsDir, templateFile));
-            reply.type('image/' + path.extname(templateFile).slice(1));
+             reply.type('application/pdf');
             return reply.send(buffer);
         } catch (error) {
             fastify.log.error(error);
@@ -2583,11 +2651,12 @@ module.exports = async function (fastify, opts) {
             if (!round) return reply.code(404).send({ error: 'Round not found' });
 
             const uploadsDir = path.join(__dirname, '../uploads');
-            const files = fs.readdirSync(uploadsDir);
-            const templateFile = files.find(f => f.startsWith('certificate_template'));
+            const templateFile = round.certificateTemplate;
 
-            if (!templateFile) return reply.code(400).send({ error: 'Please upload a certificate template first' });
+            if (!templateFile) return reply.code(400).send({ error: 'Please upload a certificate template for this round first' });
             const templatePath = path.join(uploadsDir, templateFile);
+
+            if (!fs.existsSync(templatePath)) return reply.code(500).send({ error: 'Template file missing on server' });
 
             // Fetch top winners
             const submissions = await Submission.find({ round: roundId, status: 'SUBMITTED' })

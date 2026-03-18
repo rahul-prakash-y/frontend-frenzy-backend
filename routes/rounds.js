@@ -110,7 +110,7 @@ module.exports = async function (fastify, opts) {
 
                 // Determine if student is a "winner" if certificates are released
                 let isWinner = false;
-                if (round.certificatesReleased && submission && (submission.status === 'SUBMITTED' || submission.status === 'COMPLETED')) {
+                if (round.certificatesReleased && submission && (submission.status === 'COMPLETED')) {
                     // Check persistent DB flag first
                     if (submission.hasCertificate) {
                         isWinner = true;
@@ -118,7 +118,7 @@ module.exports = async function (fastify, opts) {
                         // Fallback/Safety: Recalculate if flag not set but they might be a winner
                         const topSubmissions = await Submission.find({ 
                             round: round._id, 
-                            status: { $in: ['SUBMITTED', 'COMPLETED'] } 
+                            status: { $in: ['COMPLETED'] } 
                         })
                         .sort({ score: -1 })
                         .limit(round.winnerLimit || 10)

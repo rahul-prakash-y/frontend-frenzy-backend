@@ -939,13 +939,13 @@ module.exports = async function (fastify, opts) {
 
                 // Find new top N
                 // Include BOTH SUBMITTED and COMPLETED statuses
-                const winners = await Submission.find({ 
-                    round: submission.round, 
-                    status: { $in: ['SUBMITTED', 'COMPLETED'] } 
+                const winners = await Submission.find({
+                    round: submission.round,
+                    status: { $in: ['SUBMITTED', 'COMPLETED'] }
                 })
-                .sort({ score: -1 })
-                .limit(round.winnerLimit || 10)
-                .select('_id');
+                    .sort({ score: -1 })
+                    .limit(round.winnerLimit || 10)
+                    .select('_id');
 
                 const winnerIds = winners.map(w => w._id);
                 if (winnerIds.length > 0) {
@@ -2527,7 +2527,7 @@ module.exports = async function (fastify, opts) {
             if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir);
 
             const filePath = path.join(uploadsDir, 'certificate_template' + path.extname(data.filename));
-            
+
             // Remove existing templates to avoid confusion
             const files = fs.readdirSync(uploadsDir);
             for (const file of files) {
@@ -2601,7 +2601,7 @@ module.exports = async function (fastify, opts) {
 
             for (const sub of submissions) {
                 const studentName = sub.student?.name || 'Student';
-                
+
                 // Create PDF using PDFKit
                 const doc = new PDFDocument({
                     layout: 'landscape',
@@ -2618,7 +2618,7 @@ module.exports = async function (fastify, opts) {
 
                 // Add Student Name - Centered vertically and horizontally (Customizable in future)
                 doc.font('Helvetica-Bold').fontSize(40).fillColor('#1e293b');
-                
+
                 // Draw text in middle
                 const textWidth = doc.widthOfString(studentName);
                 const x = (doc.page.width - textWidth) / 2;
@@ -2668,13 +2668,13 @@ module.exports = async function (fastify, opts) {
 
             if (round.certificatesReleased) {
                 // Find Top N winners
-                const winners = await Submission.find({ 
-                    round: roundId, 
-                    status: { $in: ['SUBMITTED', 'COMPLETED'] } 
+                const winners = await Submission.find({
+                    round: roundId,
+                    status: { $in: ['SUBMITTED', 'COMPLETED'] }
                 })
-                .sort({ score: -1 })
-                .limit(round.winnerLimit || 10)
-                .select('_id');
+                    .sort({ score: -1 })
+                    .limit(round.winnerLimit || 10)
+                    .select('_id');
 
                 const winnerIds = winners.map(w => w._id);
                 if (winnerIds.length > 0) {
@@ -2692,14 +2692,113 @@ module.exports = async function (fastify, opts) {
                 ip: request.ip
             });
 
-            return reply.code(200).send({ 
-                success: true, 
+            return reply.code(200).send({
+                success: true,
                 message: `Certificates ${round.certificatesReleased ? 'released' : 'revoked'} successfully`,
                 data: { certificatesReleased: round.certificatesReleased, winnerLimit: round.winnerLimit }
             });
         } catch (error) {
             fastify.log.error(error);
             return reply.code(500).send({ error: 'Failed to update certificate release status' });
+        }
+    });
+
+
+    /**
+     * GET /api/superadmin/team-requests
+     * Returns all students who have a pending team enrollment request.
+     */
+    fastify.get('/team-requests', { preValidation: [fastify.requireAdmin] }, async (request, reply) => {
+        try {
+            const requests = await User.find({
+                'teamRequest.status': 'PENDING',
+                team: null,
+                role: 'STUDENT'
+            }).select('studentId name email department teamRequest createdAt').sort({ 'teamRequest.requestedAt': 1 });
+
+            return reply.code(200).send({ success: true, data: requests });
+        } catch (error) {
+            fastify.log.error(error);
+            return reply.code(500).send({ error: 'Failed to fetch team requests' });
+        }
+    });
+
+    /**
+     * POST /api/superadmin/team-requests/:userId/assign
+     * Admin assigns the student to a team — approves their request.
+     * Body: { teamId: string }
+     */
+    fastify.post('/team-requests/:userId/assign', { preValidation: [fastify.requireAdmin] }, async (request, reply) => {
+        try {
+            const { userId } = request.params;
+            const { teamId } = request.body;
+
+            if (!teamId) return reply.code(400).send({ error: 'teamId is required' });
+
+            const [user, team] = await Promise.all([
+                User.findById(userId),
+                Team.findById(teamId)
+            ]);
+
+            if (!user) return reply.code(404).send({ error: 'User not found' });
+            if (!team) return reply.code(404).send({ error: 'Team not found' });
+
+            // Assign team on user document
+            user.team = team._id;
+            user.teamRequest = { status: 'APPROVED', message: null, requestedAt: user.teamRequest?.requestedAt };
+            await user.save();
+
+            // Add member to team (if not already)
+            if (!team.members.includes(user._id)) {
+                team.members.push(user._id);
+                await team.save();
+            }
+
+            await logActivity({
+                action: 'TEAM_ASSIGNED',
+                performedBy: { userId: request.user?.userId, studentId: request.user?.studentId, name: request.user?.name, role: request.user?.role },
+                target: { type: 'User', id: userId, label: `${user.studentId} assigned to team ${team.name}` },
+                ip: request.ip
+            });
+
+            return reply.code(200).send({ success: true, message: `${user.studentId} assigned to team "${team.name}".` });
+        } catch (error) {
+            fastify.log.error(error);
+            return reply.code(500).send({ error: 'Failed to assign team' });
+        }
+    });
+
+    /**
+     * POST /api/superadmin/team-requests/:userId/reject
+     * Admin rejects the student's team enrollment request.
+     * Body: { message?: string }
+     */
+    fastify.post('/team-requests/:userId/reject', { preValidation: [fastify.requireAdmin] }, async (request, reply) => {
+        try {
+            const { userId } = request.params;
+            const { message } = request.body || {};
+
+            const user = await User.findById(userId);
+            if (!user) return reply.code(404).send({ error: 'User not found' });
+
+            user.teamRequest = {
+                status: 'REJECTED',
+                message: message || 'Your request was rejected by the admin.',
+                requestedAt: user.teamRequest?.requestedAt
+            };
+            await user.save();
+
+            await logActivity({
+                action: 'TEAM_REQUEST_REJECTED',
+                performedBy: { userId: request.user?.userId, studentId: request.user?.studentId, name: request.user?.name, role: request.user?.role },
+                target: { type: 'User', id: userId, label: `${user.studentId} — Team request rejected` },
+                ip: request.ip
+            });
+
+            return reply.code(200).send({ success: true, message: 'Request rejected.' });
+        } catch (error) {
+            fastify.log.error(error);
+            return reply.code(500).send({ error: 'Failed to reject team request' });
         }
     });
 

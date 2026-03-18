@@ -1,6 +1,8 @@
 const bcrypt = require('bcryptjs');
 const User = require('../models/User');
 const { logActivity } = require('../utils/logger');
+const Team = require('../models/Team');
+
 
 module.exports = async function (fastify, opts) {
 
@@ -38,6 +40,8 @@ module.exports = async function (fastify, opts) {
                 return reply.code(401).send({ error: 'Invalid credentials' });
             }
 
+            const team = await Team.findOne({ members: user._id });
+
             // Exact JWT Payload Structure definition
             const payload = {
                 userId: user._id,
@@ -47,7 +51,8 @@ module.exports = async function (fastify, opts) {
                 isBanned: user.isBanned,
                 banReason: user.banReason,
                 isOnboarded: user.isOnboarded,
-                team: user.team
+                team,
+                teamRequest: user.teamRequest || { status: 'NONE' },
             };
 
             // Sign token (valid for a typical hackathon duration plus warmup delay)
@@ -280,6 +285,47 @@ module.exports = async function (fastify, opts) {
         } catch (error) {
             fastify.log.error(error);
             return reply.code(500).send({ error: 'Failed to update profile' });
+        }
+    });
+
+    /**
+     * ROUTE: POST /api/auth/team-request
+     * Authenticated (student). Submits or re-submits a team enrollment request.
+     */
+    fastify.post('/team-request', { preValidation: [fastify.authenticate] }, async (request, reply) => {
+        try {
+            const userId = request.user.userId;
+            const user = await User.findById(userId);
+            if (!user) return reply.code(404).send({ error: 'User not found' });
+
+            if (user.team) {
+                return reply.code(400).send({ error: 'You are already assigned to a team.' });
+            }
+
+            // Allow NONE or REJECTED to submit/re-submit
+            const currentStatus = user.teamRequest?.status || 'NONE';
+            if (currentStatus === 'PENDING') {
+                return reply.code(400).send({ error: 'You already have a pending request.' });
+            }
+
+            user.teamRequest = {
+                status: 'PENDING',
+                message: null,
+                requestedAt: new Date()
+            };
+            await user.save();
+
+            await logActivity({
+                action: 'TEAM_REQUEST',
+                performedBy: { userId: user._id, studentId: user.studentId, name: user.name, role: user.role },
+                target: { type: 'User', id: user._id.toString(), label: `${user.studentId} — Team Enrollment Request` },
+                ip: request.ip
+            });
+
+            return reply.code(200).send({ success: true, message: 'Team enrollment request submitted successfully.' });
+        } catch (error) {
+            fastify.log.error(error);
+            return reply.code(500).send({ error: 'Failed to submit team request' });
         }
     });
 

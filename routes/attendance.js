@@ -4,6 +4,23 @@ const { logActivity } = require('../utils/logger');
 
 module.exports = async function (fastify, opts) {
 
+    // ─── STUDENT: Get My Attendance History ──────────────────────────────────
+    fastify.get('/my-history', { preValidation: [fastify.authenticate] }, async (request, reply) => {
+        try {
+            const studentId = request.user.userId;
+
+            const records = await Attendance.find({ student: studentId })
+                .populate('markedBy', 'name studentId role')
+                .populate('round', 'name')
+                .sort({ createdAt: -1 });
+
+            return reply.send({ success: true, data: records });
+        } catch (error) {
+            fastify.log.error(error);
+            return reply.code(500).send({ error: 'Failed to fetch attendance history' });
+        }
+    });
+
     // ─── ADMIN: Generate Attendance OTP ──────────────────────────────────────
     fastify.post('/generate', { preValidation: [fastify.requireAdmin] }, async (request, reply) => {
         try {

@@ -17,6 +17,73 @@ const generateOtp = () => {
 
 module.exports = async function (fastify, opts) {
     /**
+     * NEW: GET /api/rounds/my-certificates
+     * Returns all rounds where the student has a certificate available.
+     * Auth: Student
+     */
+    fastify.get('/my-certificates', { preValidation: [fastify.authenticate] }, async (request, reply) => {
+        try {
+            const studentId = request.user.userId;
+
+            // Find all rounds that have certificates released
+            const rounds = await Round.find({ certificatesReleased: true }).lean();
+            if (!rounds.length) return reply.send({ success: true, data: [] });
+
+            // Check if a global certificate template exists
+            const uploadsDir = path.join(__dirname, '../uploads');
+            const templateExists = fs.existsSync(uploadsDir) && fs.readdirSync(uploadsDir).some(f => f.startsWith('certificate_template'));
+
+            if (!templateExists) return reply.send({ success: true, data: [] });
+
+            const roundIds = rounds.map(r => r._id);
+
+            // Find submissions for these rounds where student is a winner (hasCertificate)
+            // Or where they are in the Top N
+            const certificates = [];
+
+            for (const round of rounds) {
+                const submission = await Submission.findOne({ 
+                    student: studentId, 
+                    round: round._id,
+                    status: { $in: ['SUBMITTED', 'COMPLETED'] }
+                });
+
+                if (!submission) continue;
+
+                let isWinner = submission.hasCertificate;
+                
+                if (!isWinner) {
+                    // Fallback check if flag not set (e.g. recalculated by admin later)
+                    const topSubmissions = await Submission.find({ 
+                        round: round._id, 
+                        status: { $in: ['SUBMITTED', 'COMPLETED'] } 
+                    })
+                    .sort({ score: -1 })
+                    .limit(round.winnerLimit || 10)
+                    .select('student');
+                    
+                    isWinner = topSubmissions.some(s => s.student.toString() === studentId);
+                }
+
+                if (isWinner) {
+                    certificates.push({
+                        roundId: round._id,
+                        roundName: round.name,
+                        date: round.startTime || round.createdAt,
+                        score: submission.score,
+                        status: submission.status
+                    });
+                }
+            }
+
+            return reply.send({ success: true, data: certificates });
+        } catch (error) {
+            fastify.log.error(error);
+            return reply.code(500).send({ error: 'Failed to fetch certificates' });
+        }
+    });
+
+    /**
      * 0. List All Rounds (GET /api/rounds)
      * Auth: Must use the authenticate hook (Student).
      */

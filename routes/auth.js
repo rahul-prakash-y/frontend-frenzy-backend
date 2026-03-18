@@ -46,7 +46,8 @@ module.exports = async function (fastify, opts) {
                 name: user.name,
                 isBanned: user.isBanned,
                 banReason: user.banReason,
-                isOnboarded: user.isOnboarded
+                isOnboarded: user.isOnboarded,
+                team: user.team
             };
 
             // Sign token (valid for a typical hackathon duration plus warmup delay)

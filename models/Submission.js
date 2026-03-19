@@ -71,6 +71,10 @@ const submissionSchema = new mongoose.Schema({
             questionId: { type: mongoose.Schema.Types.ObjectId, ref: 'Question' },
             adminId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
             score: { type: Number, default: 0 },
+            rubricScores: [{
+                criterion: { type: String, required: true },
+                score: { type: Number, required: true }
+            }],
             feedback: { type: String, default: '' },
             evaluatedAt: { type: Date, default: Date.now }
         }

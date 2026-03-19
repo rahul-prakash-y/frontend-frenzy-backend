@@ -920,11 +920,11 @@ module.exports = async function (fastify, opts) {
     fastify.post('/manual-evaluations/:submissionId/score', { preValidation: [fastify.requireAdmin] }, async (request, reply) => {
         try {
             const { submissionId } = request.params;
-            const { questionId, score, feedback } = request.body;
+            const { questionId, score, feedback, rubricScores } = request.body;
             const adminId = request.user.userId;
 
-            if (!questionId || score === undefined) {
-                return reply.code(400).send({ error: 'questionId and score are required' });
+             if (!questionId) {
+                return reply.code(400).send({ error: 'questionId is required' });
             }
 
             // Verify the question is actually assigned to this admin
@@ -936,24 +936,47 @@ module.exports = async function (fastify, opts) {
             const submission = await Submission.findById(submissionId);
             if (!submission) return reply.code(404).send({ error: 'Submission not found' });
 
+            let finalQuestionScore = score;
+            let validatedRubricScores = [];
+
+            // If rubricScores are provided, calculate total score from them
+            if (rubricScores && Array.isArray(rubricScores) && rubricScores.length > 0) {
+                let totalFromRubrics = 0;
+                for (const rs of rubricScores) {
+                    const rubricDef = question.rubrics.find(r => r.criterion === rs.criterion);
+                    const maxScore = rubricDef ? rubricDef.maxScore : Infinity;
+                    
+                    if (rs.score > maxScore) {
+                        return reply.code(400).send({ error: `Score for "${rs.criterion}" exceeds maximum allowed (${maxScore})` });
+                    }
+                    totalFromRubrics += Number(rs.score) || 0;
+                    validatedRubricScores.push({ criterion: rs.criterion, score: Number(rs.score) || 0 });
+                }
+                finalQuestionScore = totalFromRubrics;
+            }
+
+            if (finalQuestionScore === undefined) {
+                return reply.code(400).send({ error: 'score or rubricScores are required' });
+            }
+
             // Upsert the manual score entry for this question
             const existingIndex = submission.manualScores.findIndex(
                 ms => ms.questionId && ms.questionId.toString() === questionId.toString()
             );
 
-            if (existingIndex >= 0) {
-                submission.manualScores[existingIndex].score = score;
-                submission.manualScores[existingIndex].feedback = feedback || '';
-                submission.manualScores[existingIndex].evaluatedAt = new Date();
-                submission.manualScores[existingIndex].adminId = adminId;
-            } else {
-                submission.manualScores.push({
+           const scoreEntry = {
                     questionId,
                     adminId,
-                    score,
+                    score: finalQuestionScore,
+                    rubricScores: validatedRubricScores,
                     feedback: feedback || '',
                     evaluatedAt: new Date()
-                });
+                };
+
+            if (existingIndex >= 0) {
+                submission.manualScores[existingIndex] = scoreEntry;
+            }else {
+                submission.manualScores.push(scoreEntry);
             }
 
             // Recalculate total score as sum of all manual scores + autoScore
@@ -1018,6 +1041,39 @@ module.exports = async function (fastify, opts) {
         } catch (error) {
             fastify.log.error(error);
             return reply.code(500).send({ error: 'Failed to save evaluation score' });
+        }
+    });
+
+     /**
+     * GET /api/superadmin/questions/rubric-suggestions
+     * returns unique rubrics found in the last 20 questions of a given category
+     */
+    fastify.get('/questions/rubric-suggestions', { preValidation: [fastify.requireAdmin] }, async (request, reply) => {
+        try {
+            const { category } = request.query;
+            if (!category) return reply.code(400).send({ error: 'Category is required' });
+
+            const recentQuestions = await Question.find({ category: category.toUpperCase() })
+                .sort({ createdAt: -1 })
+                .limit(20)
+                .select('rubrics');
+
+            const rubricMap = new Map();
+            recentQuestions.forEach(q => {
+                if (q.rubrics && q.rubrics.length > 0) {
+                    q.rubrics.forEach(r => {
+                        const key = `${r.criterion.trim().toLowerCase()}_${r.maxScore}`;
+                        if (!rubricMap.has(key)) {
+                            rubricMap.set(key, { criterion: r.criterion, maxScore: r.maxScore });
+                        }
+                    });
+                }
+            });
+
+            return reply.code(200).send({ success: true, data: Array.from(rubricMap.values()) });
+        } catch (error) {
+            fastify.log.error(error);
+            return reply.code(500).send({ error: 'Failed to fetch rubric suggestions' });
         }
     });
 

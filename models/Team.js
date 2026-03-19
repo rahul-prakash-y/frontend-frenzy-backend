@@ -10,7 +10,11 @@ const teamSchema = new mongoose.Schema({
     members: [{
         type: mongoose.Schema.Types.ObjectId,
         ref: 'User'
-    }]
+    }],
+    isReportPublished: {
+        type: Boolean,
+        default: false
+    }
 }, {
     timestamps: true
 });

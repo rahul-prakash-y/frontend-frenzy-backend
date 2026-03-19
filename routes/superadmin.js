@@ -2862,5 +2862,57 @@ module.exports = async function (fastify, opts) {
         }
     });
 
+    /**
+     * PATCH /api/superadmin/students/:id/publish-report
+     * Toggle the report publication status for a student.
+     */
+    fastify.patch('/students/:id/publish-report', { preValidation: [fastify.requireAdmin] }, async (request, reply) => {
+        try {
+            const { id } = request.params;
+            const { isReportPublished } = request.body;
+            
+            const student = await User.findByIdAndUpdate(id, { isReportPublished }, { new: true });
+            if (!student) return reply.code(404).send({ error: 'Student not found' });
+
+            await logActivity({
+                action: 'UPDATED',
+                performedBy: { userId: request.user?.userId, name: request.user?.name, role: request.user?.role },
+                target: { type: 'Student', id, label: `${student.studentId} — Report ${isReportPublished ? 'PUBLISHED' : 'UNPUBLISHED'}` },
+                ip: request.ip
+            });
+
+            return reply.code(200).send({ success: true, isReportPublished: student.isReportPublished });
+        } catch (error) {
+            fastify.log.error(error);
+            return reply.code(500).send({ error: 'Failed to toggle publication status' });
+        }
+    });
+
+    /**
+     * PATCH /api/superadmin/teams/:id/publish-report
+     * Toggle the report publication status for a team.
+     */
+    fastify.patch('/teams/:id/publish-report', { preValidation: [fastify.requireAdmin] }, async (request, reply) => {
+        try {
+            const { id } = request.params;
+            const { isReportPublished } = request.body;
+            
+            const team = await Team.findByIdAndUpdate(id, { isReportPublished }, { new: true });
+            if (!team) return reply.code(404).send({ error: 'Team not found' });
+
+            await logActivity({
+                action: 'UPDATED',
+                performedBy: { userId: request.user?.userId, name: request.user?.name, role: request.user?.role },
+                target: { type: 'Team', id, label: `${team.name} — Report ${isReportPublished ? 'PUBLISHED' : 'UNPUBLISHED'}` },
+                ip: request.ip
+            });
+
+            return reply.code(200).send({ success: true, isReportPublished: team.isReportPublished });
+        } catch (error) {
+            fastify.log.error(error);
+            return reply.code(500).send({ error: 'Failed to toggle team publication status' });
+        }
+    });
+
 
 };

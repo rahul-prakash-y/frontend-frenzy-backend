@@ -107,7 +107,11 @@ const userSchema = new mongoose.Schema({
     requestedAt: {
       type: Date,
       default: null
-    }
+    },
+    isReportPublished: {
+    type: Boolean,
+    default: false
+  }
   }
 }, {
   timestamps: true

@@ -73,10 +73,11 @@ module.exports = async function (fastify, opts) {
         try {
             const { roundId } = request.params;
             const data = await request.file();
-            if (!data) return reply.code(400).send({ error: 'No PDF file uploaded' });
+            if (!data) return reply.code(400).send({ error: 'No file uploaded' });
 
-            if (data.mimetype !== 'application/pdf') {
-                return reply.code(400).send({ error: 'Only PDF files are allowed as certificate templates' });
+            const allowedMimeTypes = ['application/pdf', 'image/png', 'image/jpeg', 'image/jpg'];
+            if (!allowedMimeTypes.includes(data.mimetype)) {
+                return reply.code(400).send({ error: 'Only PDF and image files (PNG, JPEG) are allowed as certificate templates' });
             }
 
             const uploadsDir = path.join(__dirname, '../uploads');
@@ -84,12 +85,12 @@ module.exports = async function (fastify, opts) {
                 fs.mkdirSync(uploadsDir, { recursive: true });
             }
 
-           // Save to DB
-            const round = await Round.findByIdAndUpdate(roundId, { 
+            // Save to DB
+            const round = await Round.findByIdAndUpdate(roundId, {
                 certificateTemplate: {
                     data: buffer,
                     contentType: data.mimetype
-                } 
+                }
             }, { new: true });
 
             if (!round) return reply.code(404).send({ error: 'Round not found' });
@@ -98,7 +99,7 @@ module.exports = async function (fastify, opts) {
             await logActivity({
                 action: 'UPLOADED',
                 performedBy: { userId: request.user?.userId, name: request.user?.name, role: request.user?.role },
-               target: { type: 'Round', id: roundId, label: `Certificate template for ${round.name} (Stored in DB)` },
+                target: { type: 'Round', id: roundId, label: `Certificate template for ${round.name} (Stored in DB)` },
                 ip: request.ip
             });
 
@@ -2627,7 +2628,7 @@ module.exports = async function (fastify, opts) {
             if (!templateFile) return reply.code(404).send({ error: 'No template found' });
 
             const buffer = fs.readFileSync(path.join(uploadsDir, templateFile));
-             reply.type('application/pdf');
+            reply.type('application/pdf');
             return reply.send(buffer);
         } catch (error) {
             fastify.log.error(error);
@@ -2870,7 +2871,7 @@ module.exports = async function (fastify, opts) {
         try {
             const { id } = request.params;
             const { isReportPublished } = request.body;
-            
+
             const student = await User.findByIdAndUpdate(id, { isReportPublished }, { new: true });
             if (!student) return reply.code(404).send({ error: 'Student not found' });
 
@@ -2896,7 +2897,7 @@ module.exports = async function (fastify, opts) {
         try {
             const { id } = request.params;
             const { isReportPublished } = request.body;
-            
+
             const team = await Team.findByIdAndUpdate(id, { isReportPublished }, { new: true });
             if (!team) return reply.code(404).send({ error: 'Team not found' });
 

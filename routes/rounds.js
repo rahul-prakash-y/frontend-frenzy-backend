@@ -9,6 +9,7 @@ const { isStudentEligible } = require('../utils/eligibility');
 const fs = require('fs');
 const path = require('path');
 const PDFDocument = require('pdfkit-table');
+const { PDFDocument: PDFLibDoc } = require('pdf-lib');
 
 // Helper to generate a secure 6-digit OTP
 const generateOtp = () => {
@@ -180,6 +181,33 @@ module.exports = async function (fastify, opts) {
             const user = await User.findById(studentId);
             const studentName = user?.name || 'Student';
 
+            let pdfBuffer;
+
+            if (contentType === 'application/pdf') {
+                // Use pdf-lib for PDF templates
+                const pdfDoc = await PDFLibDoc.load(templateBuffer);
+                const { StandardFonts, rgb } = require('pdf-lib');
+                const helveticaFont = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+                
+                const pages = pdfDoc.getPages();
+                const firstPage = pages[0];
+                const { width, height } = firstPage.getSize();
+                
+                const fontSize = 40;
+                const textWidth = helveticaFont.widthOfTextAtSize(studentName, fontSize);
+                
+                firstPage.drawText(studentName, {
+                    x: (width - textWidth) / 2,
+                    y: height / 2.2,
+                    size: fontSize,
+                    font: helveticaFont,
+                    color: rgb(30/255, 41/255, 59/255) // #1e293b
+                });
+
+                pdfBuffer = Buffer.from(await pdfDoc.save());
+            } else {
+                // Use pdfkit for image templates (existing logic)
+
             const doc = new PDFDocument({
                 layout: 'landscape',
                 size: 'A4',
@@ -198,9 +226,10 @@ module.exports = async function (fastify, opts) {
             doc.text(studentName, x, y);
             doc.end();
 
-            const pdfBuffer = await new Promise((resolve) => {
+            pdfBuffer = await new Promise((resolve) => {
                 doc.on('end', () => resolve(Buffer.concat(chunks)));
             });
+        }
 
             reply.header('Content-Type', 'application/pdf');
             reply.header('Content-Disposition', `attachment; filename=${studentName.replace(/\s+/g, '_')}_certificate.pdf`);

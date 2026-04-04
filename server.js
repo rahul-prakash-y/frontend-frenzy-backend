@@ -15,19 +15,7 @@ const { startSubmissionQueue, flushNow } = require('./services/submissionQueue')
 // Credentials: true is required for cookies / Authorization headers.
 // Wildcard '*' is intentionally NOT used.
 fastify.register(require('@fastify/cors'), {
-    origin: (origin, callback) => {
-        const allowedOrigin = process.env.FRONTEND_URL || "*";
-
-        // Always allow non-browser requests (e.g. curl, Postman, health checks)
-        // where `origin` header is undefined.
-        if (!origin || origin === allowedOrigin) {
-            return callback(null, true);
-        }
-
-        // All other origins are blocked.
-        fastify.log.warn(`[CORS] Blocked request from unauthorized origin: ${origin}`);
-        return callback(new Error(`CORS: Origin '${origin}' not allowed`), false);
-    },
+    origin: "*",
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization'],
     credentials: true   // Required for cookies / auth headers

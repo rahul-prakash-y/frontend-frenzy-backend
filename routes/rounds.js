@@ -1144,4 +1144,108 @@ module.exports = async function (fastify, opts) {
             queueDepth: queueLength
         });
     });
+
+    /**
+     * PRACTICE MODE
+     * POST /api/rounds/:roundId/practice-start
+     * Auth: Student
+     *
+     * Lets a student "enter" practice mode with ZERO DB writes.
+     * No Submission document is created — this is purely a gate-check +
+     * metadata return so the frontend can start a cosmetic countdown timer.
+     *
+     * Guards:
+     *  - Round must exist
+     *  - Round.isPracticeEnabled must be true
+     */
+    fastify.post('/:roundId/practice-start', { preValidation: [fastify.authenticate] }, async (request, reply) => {
+        const { roundId } = request.params;
+
+        if (!mongoose.Types.ObjectId.isValid(roundId)) {
+            return reply.code(400).send({ error: 'Invalid Round ID' });
+        }
+
+        try {
+            const round = await Round.findById(roundId).select('name durationMinutes testDurationMinutes isPracticeEnabled practiceQuestionCount questionCount');
+            if (!round) return reply.code(404).send({ error: 'Round not found' });
+
+            if (!round.isPracticeEnabled) {
+                return reply.code(403).send({ error: 'Practice mode is not enabled for this round.' });
+            }
+
+            // No DB write — purely returning metadata for the frontend
+            return reply.code(200).send({
+                success: true,
+                message: 'Practice session started. No answers will be saved.',
+                roundName: round.name,
+                // The timer shown to the student is purely cosmetic in practice mode
+                durationMinutes: round.testDurationMinutes || round.durationMinutes,
+                practiceQuestionCount: round.practiceQuestionCount ?? round.questionCount ?? null
+            });
+
+        } catch (error) {
+            fastify.log.error(error);
+            return reply.code(500).send({ error: 'Failed to start practice session' });
+        }
+    });
+
+    /**
+     * GET /api/rounds/:roundId/practice-questions
+     * Auth: Student
+     *
+     * Returns shuffled questions for the round WITHOUT requiring an active
+     * Submission session. The `correctAnswer` field is intentionally stripped
+     * from every question before sending so students can not peek at answers.
+     *
+     * Guards:
+     *  - Round must exist
+     *  - Round.isPracticeEnabled must be true
+     */
+    fastify.get('/:roundId/practice-questions', { preValidation: [fastify.authenticate] }, async (request, reply) => {
+        const { roundId } = request.params;
+
+        if (!mongoose.Types.ObjectId.isValid(roundId)) {
+            return reply.code(400).send({ error: 'Invalid Round ID' });
+        }
+
+        try {
+            const round = await Round.findById(roundId).select('isPracticeEnabled shuffleQuestions questionCount practiceQuestionCount');
+            if (!round) return reply.code(404).send({ error: 'Round not found' });
+
+            if (!round.isPracticeEnabled) {
+                return reply.code(403).send({ error: 'Practice mode is not enabled for this round.' });
+            }
+
+            const Question = require('../models/Question');
+
+            // Fetch all questions linked to this round (same query as the real /questions route)
+            let questions = await Question.find({ linkedRounds: roundId })
+                .select('-correctAnswer') // ← Strip answers — students must not see them in practice
+                .lean();
+
+            // Shuffle if the round is configured to do so
+            if (round.shuffleQuestions) {
+                for (let i = questions.length - 1; i > 0; i--) {
+                    const j = Math.floor(Math.random() * (i + 1));
+                    [questions[i], questions[j]] = [questions[j], questions[i]];
+                }
+            }
+
+            // Cap to practiceQuestionCount (or questionCount) if set
+            const cap = round.practiceQuestionCount ?? round.questionCount ?? null;
+            if (cap !== null && cap > 0) {
+                questions = questions.slice(0, cap);
+            }
+
+            return reply.code(200).send({
+                success: true,
+                isPractice: true, // Tells the frontend to show the "Practice" banner / disable submit
+                data: questions
+            });
+
+        } catch (error) {
+            fastify.log.error(error);
+            return reply.code(500).send({ error: 'Failed to fetch practice questions' });
+        }
+    });
 };

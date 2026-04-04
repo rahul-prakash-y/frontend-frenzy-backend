@@ -112,6 +112,65 @@ module.exports = async function (fastify, opts) {
 
 
     /**
+     * PATCH /api/superadmin/rounds/:roundId/practice-settings
+     * Admin can enable/disable Practice Mode for a round and optionally set
+     * how many sample questions students will see.
+     *
+     * Body: { isPracticeEnabled: Boolean, practiceQuestionCount: Number | null }
+     * Auth: requireAdmin
+     */
+    fastify.patch('/rounds/:roundId/practice-settings', { preValidation: [fastify.requireAdmin] }, async (request, reply) => {
+        try {
+            const { roundId } = request.params;
+            const { isPracticeEnabled, practiceQuestionCount } = request.body;
+
+            if (!mongoose.Types.ObjectId.isValid(roundId)) {
+                return reply.code(400).send({ error: 'Invalid Round ID' });
+            }
+
+            const updateData = {};
+
+            if (isPracticeEnabled !== undefined) {
+                updateData.isPracticeEnabled = Boolean(isPracticeEnabled);
+            }
+
+            if (practiceQuestionCount !== undefined) {
+                // Allow null (means "use the round's own questionCount") or a positive number
+                updateData.practiceQuestionCount = (practiceQuestionCount === null || practiceQuestionCount === '')
+                    ? null
+                    : Math.max(1, Number(practiceQuestionCount));
+            }
+
+            if (Object.keys(updateData).length === 0) {
+                return reply.code(400).send({ error: 'No valid fields provided. Use isPracticeEnabled or practiceQuestionCount.' });
+            }
+
+            const round = await Round.findByIdAndUpdate(roundId, updateData, { new: true })
+                .select('name isPracticeEnabled practiceQuestionCount questionCount');
+
+            if (!round) return reply.code(404).send({ error: 'Round not found' });
+
+            await logActivity({
+                action: 'UPDATED',
+                performedBy: { userId: request.user?.userId, studentId: request.user?.studentId, name: request.user?.name, role: request.user?.role },
+                target: { type: 'Round', id: roundId, label: `Practice settings updated for "${round.name}"` },
+                metadata: { isPracticeEnabled: round.isPracticeEnabled, practiceQuestionCount: round.practiceQuestionCount },
+                ip: request.ip
+            });
+
+            return reply.code(200).send({
+                success: true,
+                message: `Practice mode ${round.isPracticeEnabled ? 'enabled' : 'disabled'} for "${round.name}".`,
+                data: round
+            });
+
+        } catch (error) {
+            fastify.log.error(error);
+            return reply.code(500).send({ error: 'Failed to update practice settings' });
+        }
+    });
+
+    /**
      * 1. GET /api/superadmin/audit-logs
      * Returns all submissions across all rounds, enriched with student + round info.
      */

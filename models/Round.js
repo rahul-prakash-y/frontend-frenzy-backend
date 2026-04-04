@@ -97,6 +97,15 @@ const roundSchema = new mongoose.Schema({
     endTime: {
         type: Date,
         default: null
+    },
+    // Practice Mode
+    isPracticeEnabled: {
+        type: Boolean,
+        default: false // Admin toggles this to show a "Practice" button to students
+    },
+    practiceQuestionCount: {
+        type: Number,
+        default: null // null = same as questionCount; set to N to cap sample questions shown
     }
 }, {
     timestamps: true

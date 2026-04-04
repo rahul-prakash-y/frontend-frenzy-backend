@@ -7,6 +7,7 @@ const path = require("path");
 // ─── Background Services ──────────────────────────────────────────────────────
 const { startLeaderboardCache } = require('./services/leaderboardCache');
 const { startSubmissionQueue, flushNow } = require('./services/submissionQueue');
+const { hydrateStaticData } = require('./services/cacheService');
 
 // ─── Task 4: Strict CORS Configuration ───────────────────────────────────────
 // Reads the allowed origin from the environment variable FRONTEND_URL.
@@ -38,6 +39,7 @@ fastify.register(require('./routes/admin'), { prefix: '/api/admin' });
 fastify.register(require('./routes/superadmin'), { prefix: '/api/superadmin' });
 fastify.register(require('./routes/attendance'), { prefix: '/api/attendance' });
 fastify.register(require('./routes/student'), { prefix: '/api/student' });
+fastify.register(require('./routes/internal'), { prefix: '/api/internal' });
 
 // ─── Graceful Shutdown ────────────────────────────────────────────────────────
 const closeServer = async (signal) => {
@@ -91,6 +93,9 @@ const start = async () => {
         });
 
         fastify.log.info('MongoDB Connected (maxPoolSize: 20) 🚀');
+
+        // Boot-Time Hydration: Pre-fetch static data to RAM
+        await hydrateStaticData();
 
         // Start background services AFTER DB is ready
         startLeaderboardCache();   // Task 1: warm in-memory leaderboard cache

@@ -90,10 +90,8 @@ module.exports = async function (fastify, opts) {
     fastify.get('/', { preValidation: [fastify.authenticate] }, async (request, reply) => {
         try {
             // Exclude sensitive OTP fields from the initial query for students
-            const rounds = await Round.find({})
-                .select('-startOtp -endOtp -otpIssuedAt')
-                .sort({ createdAt: -1 })
-                .lean();
+            const { getRoundsCache } = require('../services/cacheService');
+            const rounds = getRoundsCache();
 
             const studentId = request.user.userId;
             const uploadsDir = path.join(__dirname, '../uploads');
@@ -800,25 +798,21 @@ module.exports = async function (fastify, opts) {
                 return reply.code(403).send({ error: 'Access denied. Round session is not active.' });
             }
 
-            const Question = require('../models/Question');
+            const { getQuestionsByRound } = require('../services/cacheService');
             let assignedQuestions;
 
             if (submission.assignedQuestions && submission.assignedQuestions.length > 0) {
                 // Student already has an assigned set — return it in the saved order
                 const qMap = {};
-                const allQ = await Question.find({ _id: { $in: submission.assignedQuestions } });
+                const allQ = getQuestionsByRound(roundId);
                 allQ.forEach(q => { qMap[q._id.toString()] = q; });
                 assignedQuestions = submission.assignedQuestions
                     .map(id => qMap[id.toString()])
                     .filter(Boolean);
             } else {
-                // First load: build and persist the student's question set
-                const allQuestions = await Question.find({
-                    $or: [
-                        { round: roundId },
-                        { linkedRounds: roundId }
-                    ]
-                }).sort({ order: 1 });
+                // First load: build and persist the student's question set using In-Memory Cache
+                const cachedQuestions = getQuestionsByRound(roundId);
+                const allQuestions = [...cachedQuestions];
 
                 // Group the available questions by their type field
                 const groupedQuestions = {

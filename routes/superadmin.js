@@ -2,6 +2,7 @@ const mongoose = require('mongoose');
 const Question = require('../models/Question');
 const Submission = require('../models/Submission');
 const Round = require('../models/Round');
+const PracticeSubmission = require('../models/PracticeSubmission');
 const ActivityLog = require('../models/ActivityLog');
 const User = require('../models/User');
 const AdminOTP = require('../models/AdminOTP');
@@ -122,7 +123,7 @@ module.exports = async function (fastify, opts) {
     fastify.patch('/rounds/:roundId/practice-settings', { preValidation: [fastify.requireAdmin] }, async (request, reply) => {
         try {
             const { roundId } = request.params;
-            const { isPracticeEnabled, practiceQuestionCount } = request.body;
+            const { isPracticeEnabled, practiceQuestionCount, maxPracticeAttempts } = request.body;
 
             if (!mongoose.Types.ObjectId.isValid(roundId)) {
                 return reply.code(400).send({ error: 'Invalid Round ID' });
@@ -141,12 +142,18 @@ module.exports = async function (fastify, opts) {
                     : Math.max(1, Number(practiceQuestionCount));
             }
 
+            if (maxPracticeAttempts !== undefined) {
+                updateData.maxPracticeAttempts = (maxPracticeAttempts === null || maxPracticeAttempts === '')
+                    ? 3 // Default back to 3 if null
+                    : Math.max(1, Number(maxPracticeAttempts));
+            }
+
             if (Object.keys(updateData).length === 0) {
-                return reply.code(400).send({ error: 'No valid fields provided. Use isPracticeEnabled or practiceQuestionCount.' });
+                return reply.code(400).send({ error: 'No valid fields provided. Use isPracticeEnabled, practiceQuestionCount, or maxPracticeAttempts.' });
             }
 
             const round = await Round.findByIdAndUpdate(roundId, updateData, { new: true })
-                .select('name isPracticeEnabled practiceQuestionCount questionCount');
+                .select('name isPracticeEnabled practiceQuestionCount maxPracticeAttempts questionCount');
 
             if (!round) return reply.code(404).send({ error: 'Round not found' });
 
@@ -207,7 +214,7 @@ module.exports = async function (fastify, opts) {
             const limitNum = Math.max(1, Number(limit));
             const skip = (pageNum - 1) * limitNum;
 
-            const [submissions, total] = await Promise.all([
+            const [submissions, totalSubmissions, practiceSubmissions, totalPractice] = await Promise.all([
                 Submission.find(filter)
                     .populate('student', 'studentId name role isBanned')
                     .populate('round', 'name status type')
@@ -215,16 +222,30 @@ module.exports = async function (fastify, opts) {
                     .populate('manualScores.questionId', 'title points type')
                     .populate('manualScores.adminId', 'name')
                     .sort({ createdAt: -1 })
-                    .skip(skip)
-                    .limit(limitNum),
-                Submission.countDocuments(filter)
+                    .lean(),
+                Submission.countDocuments(filter),
+                PracticeSubmission.find(filter)
+                    .populate('student', 'studentId name role isBanned')
+                    .populate('round', 'name status type')
+                    .populate('manualScores.questionId', 'title points type')
+                    .populate('manualScores.adminId', 'name')
+                    .sort({ createdAt: -1 })
+                    .lean(),
+                PracticeSubmission.countDocuments(filter)
             ]);
 
+            const combined = [
+                ...submissions.map(s => ({ ...s, isPractice: false })),
+                ...practiceSubmissions.map(s => ({ ...s, isPractice: true }))
+            ].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+            const total = totalSubmissions + totalPractice;
+            const paginatedData = combined.slice(skip, skip + limitNum);
             const totalPages = Math.ceil(total / limitNum);
 
             return reply.code(200).send({
                 success: true,
-                data: submissions,
+                data: paginatedData,
                 pagination: {
                     totalRecords: total,
                     total,
@@ -909,20 +930,32 @@ module.exports = async function (fastify, opts) {
                 submissionFilter.student = { $in: students.map(s => s._id) };
             }
 
-            // 3. Find and Paginate Submissions
-            const [submissions, total] = await Promise.all([
+            // 3. Find and Paginate from BOTH collections
+            const [submissions, totalSubmissions, practiceSubmissions, totalPractice] = await Promise.all([
                 Submission.find(submissionFilter)
                     .populate('student', 'name studentId')
                     .populate('round', 'name')
                     .sort({ updatedAt: -1 })
-                    .skip(skip)
-                    .limit(limitNum)
                     .lean(),
-                Submission.countDocuments(submissionFilter)
+                Submission.countDocuments(submissionFilter),
+                PracticeSubmission.find(submissionFilter)
+                    .populate('student', 'name studentId')
+                    .populate('round', 'name')
+                    .sort({ updatedAt: -1 })
+                    .lean(),
+                PracticeSubmission.countDocuments(submissionFilter)
             ]);
 
-            // 4. Transform results to show Student -> [Questions]
-            const result = submissions.map(sub => {
+            // 4. Combine and Transform results to show Student -> [Questions]
+            const combined = [
+                ...submissions.map(s => ({ ...s, isPractice: false })),
+                ...practiceSubmissions.map(s => ({ ...s, isPractice: true }))
+            ].sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
+
+            const total = totalSubmissions + totalPractice;
+            const paginated = combined.slice(skip, skip + limitNum);
+
+            const result = paginated.map(sub => {
                 let answers = {};
                 try {
                     answers = JSON.parse(sub.codeContent || '{}');
@@ -939,7 +972,8 @@ module.exports = async function (fastify, opts) {
                     return {
                         question: q,
                         answer: answers[q._id.toString()],
-                        existingScore: null // Since we filtered for ungraded, there's no existing score
+                        existingScore: null,
+                        isPractice: sub.isPractice
                     };
                 });
 
@@ -949,10 +983,11 @@ module.exports = async function (fastify, opts) {
                     round: sub.round,
                     pdfUrl: sub.pdfUrl,
                     status: sub.status,
+                    isPractice: sub.isPractice,
                     assignedQuestionsCount: sub.assignedQuestions.length,
                     questions: relevantQuestions
                 };
-            });
+            }).filter(item => item.questions.length > 0);
 
             return reply.code(200).send({
                 success: true,
@@ -982,7 +1017,7 @@ module.exports = async function (fastify, opts) {
             const { questionId, score, feedback, rubricScores } = request.body;
             const adminId = request.user.userId;
 
-             if (!questionId) {
+            if (!questionId) {
                 return reply.code(400).send({ error: 'questionId is required' });
             }
 
@@ -992,8 +1027,15 @@ module.exports = async function (fastify, opts) {
                 return reply.code(403).send({ error: 'You are not authorized to evaluate this question' });
             }
 
-            const submission = await Submission.findById(submissionId);
-            if (!submission) return reply.code(404).send({ error: 'Submission not found' });
+            let submission = await Submission.findById(submissionId);
+            let isPractice = false;
+
+            if (!submission) {
+                submission = await PracticeSubmission.findById(submissionId);
+                isPractice = true;
+            }
+
+            if (!submission) return reply.code(404).send({ error: 'Submission session not found' });
 
             let finalQuestionScore = score;
             let validatedRubricScores = [];
@@ -1049,10 +1091,26 @@ module.exports = async function (fastify, opts) {
             }
             submission.score = finalScore;
 
-            // NEW: Check if all manual questions for this round have been graded
-            const manualQuestions = await Question.find({ round: submission.round, isManualEvaluation: true });
+            // Check if all manual questions assigned to this submission have been graded
+            // Use assignedQuestions (works for both Submission and PracticeSubmission)
+            const assignedQIds = (submission.assignedQuestions || []).map(id => id.toString());
+            let manualQuestions;
+            if (assignedQIds.length > 0) {
+                manualQuestions = await Question.find({ _id: { $in: assignedQIds }, isManualEvaluation: true });
+            } else {
+                // Fallback for older submissions without assignedQuestions
+                manualQuestions = await Question.find({
+                    $or: [
+                        { round: submission.round },
+                        { linkedRounds: submission.round }
+                    ],
+                    isManualEvaluation: true
+                });
+            }
             const gradedQuestionIds = submission.manualScores.map(ms => ms.questionId?.toString());
-            const allGraded = manualQuestions.every(q => gradedQuestionIds.includes(q._id.toString()));
+            const allGraded = manualQuestions.length > 0
+                ? manualQuestions.every(q => gradedQuestionIds.includes(q._id.toString()))
+                : gradedQuestionIds.length > 0; // If no manual questions found but scores exist
 
             if (allGraded && submission.status === 'SUBMITTED') {
                 submission.status = 'COMPLETED';

@@ -101,12 +101,16 @@ const roundSchema = new mongoose.Schema({
     // Practice Mode
     isPracticeEnabled: {
         type: Boolean,
-        default: false // Admin toggles this to show a "Practice" button to students
+        default: true // Admin toggles this to show a "Practice" button to students
     },
     practiceQuestionCount: {
         type: Number,
         default: null // null = same as questionCount; set to N to cap sample questions shown
-    }
+    },
+    maxPracticeAttempts: {
+        type: Number,
+        default: 3 // Max times a student can practice this round
+    },
 }, {
     timestamps: true
 });

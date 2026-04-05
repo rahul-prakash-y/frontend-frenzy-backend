@@ -3,6 +3,7 @@ const mongoose = require('mongoose');
 const Round = require('../models/Round');
 const Submission = require('../models/Submission');
 const User = require('../models/User');
+const PracticeSubmission = require('../models/PracticeSubmission');
 const AdminOTP = require('../models/AdminOTP');
 const { logActivity } = require('../utils/logger');
 const { isStudentEligible } = require('../utils/eligibility');
@@ -27,7 +28,7 @@ module.exports = async function (fastify, opts) {
             const studentId = request.user.userId;
 
             // Find all rounds that have certificates released and a template assigned in DB
-            const rounds = await Round.find({ 
+            const rounds = await Round.find({
                 certificatesReleased: true,
                 'certificateTemplate.data': { $exists: true, $ne: null }
             }).lean();
@@ -42,8 +43,8 @@ module.exports = async function (fastify, opts) {
             const certificates = [];
 
             for (const round of rounds) {
-                const submission = await Submission.findOne({ 
-                    student: studentId, 
+                const submission = await Submission.findOne({
+                    student: studentId,
                     round: round._id,
                     status: { $in: ['SUBMITTED', 'COMPLETED'] }
                 });
@@ -51,17 +52,17 @@ module.exports = async function (fastify, opts) {
                 if (!submission) continue;
 
                 let isWinner = submission.hasCertificate;
-                
+
                 if (!isWinner) {
                     // Fallback check if flag not set (e.g. recalculated by admin later)
-                    const topSubmissions = await Submission.find({ 
-                        round: round._id, 
-                        status: { $in: ['SUBMITTED', 'COMPLETED'] } 
+                    const topSubmissions = await Submission.find({
+                        round: round._id,
+                        status: { $in: ['SUBMITTED', 'COMPLETED'] }
                     })
-                    .sort({ score: -1 })
-                    .limit(round.winnerLimit || 10)
-                    .select('student');
-                    
+                        .sort({ score: -1 })
+                        .limit(round.winnerLimit || 10)
+                        .select('student');
+
                     isWinner = topSubmissions.some(s => s.student.toString() === studentId);
                 }
 
@@ -84,6 +85,75 @@ module.exports = async function (fastify, opts) {
     });
 
     /**
+     * GET /api/rounds/practice-summary
+     * Returns statistics for the student's practice sessions (LeetCode-style).
+     * Auth: Student
+     * IMPORTANT: Must be registered BEFORE any /:roundId routes
+     */
+    fastify.get('/practice-summary', { preValidation: [fastify.authenticate] }, async (request, reply) => {
+        const studentId = request.user.userId;
+
+        try {
+            const allPracticeSubmissions = await PracticeSubmission.find({ 
+                student: studentId,
+                status: { $in: ['SUBMITTED', 'COMPLETED'] }
+            }).populate('assignedQuestions').populate('round', 'name').sort({ completedAt: -1 }).lean();
+
+            // 1. Difficulty & Category Stats
+            const stats = {
+                solved: { EASY: 0, MEDIUM: 0, HARD: 0, total: 0 },
+                categories: {},
+                recentActivity: [],
+                heatmap: {}
+            };
+
+            const seenQuestionIds = new Set();
+
+            allPracticeSubmissions.forEach((sub, index) => {
+                // Collect heatmap data
+                const dateField = sub.completedAt || sub.startedAt;
+                if (dateField) {
+                    const dateStr = new Date(dateField).toISOString().split('T')[0];
+                    stats.heatmap[dateStr] = (stats.heatmap[dateStr] || 0) + 1;
+                }
+
+                // Collect recent activity (last 10)
+                if (index < 10) {
+                    stats.recentActivity.push({
+                        roundName: sub.round?.name || 'Practice Session',
+                        score: sub.score,
+                        date: sub.completedAt || sub.startedAt,
+                        status: sub.status
+                    });
+                }
+
+                // Count unique questions by difficulty & category
+                if (sub.assignedQuestions && Array.isArray(sub.assignedQuestions)) {
+                    sub.assignedQuestions.forEach(q => {
+                        const qId = q._id.toString();
+                        if (!seenQuestionIds.has(qId)) {
+                            seenQuestionIds.add(qId);
+                            stats.solved[q.difficulty || 'MEDIUM']++;
+                            stats.solved.total++;
+                            const cat = q.category || 'GENERAL';
+                            stats.categories[cat] = (stats.categories[cat] || 0) + 1;
+                        }
+                    });
+                }
+            });
+
+            return reply.code(200).send({
+                success: true,
+                data: stats
+            });
+
+        } catch (error) {
+            fastify.log.error(error);
+            return reply.code(500).send({ error: 'Failed to fetch practice summary' });
+        }
+    });
+
+    /**
      * 0. List All Rounds (GET /api/rounds)
      * Auth: Must use the authenticate hook (Student).
      */
@@ -95,12 +165,13 @@ module.exports = async function (fastify, opts) {
 
             const studentId = request.user.userId;
             const uploadsDir = path.join(__dirname, '../uploads');
-            
+
 
             // Enrich rounds with the student's submission status & eligibility
             const enrichedRounds = await Promise.all(rounds.map(async (round) => {
-                const [submission, eligibility] = await Promise.all([
+                const [submission, practiceSub, eligibility] = await Promise.all([
                     Submission.findOne({ student: studentId, round: round._id }).select('status score'),
+                    PracticeSubmission.findOne({ student: studentId, round: round._id }).sort({ createdAt: -1 }),
                     isStudentEligible(studentId, round._id)
                 ]);
 
@@ -112,20 +183,27 @@ module.exports = async function (fastify, opts) {
                         isWinner = true;
                     } else {
                         // Fallback/Safety: Recalculate if flag not set but they might be a winner
-                        const topSubmissions = await Submission.find({ 
-                            round: round._id, 
-                            status: { $in: ['COMPLETED'] } 
+                        const topSubmissions = await Submission.find({
+                            round: round._id,
+                            status: { $in: ['COMPLETED'] }
                         })
-                        .sort({ score: -1 })
-                        .limit(round.winnerLimit || 10)
-                        .select('student');
-                        
+                            .sort({ score: -1 })
+                            .limit(round.winnerLimit || 10)
+                            .select('student');
+
                         isWinner = topSubmissions.some(s => s.student.toString() === studentId);
                     }
                 }
+
+                // Check practice stats
+                const practiceAttempts = await PracticeSubmission.countDocuments({ student: studentId, round: round._id });
+
                 return {
                     ...round,
                     mySubmissionStatus: submission ? submission.status : null,
+                    myPracticeStatus: practiceSub ? practiceSub.status : null,
+                    myPracticeScore: practiceSub ? practiceSub.score : null,
+                    practiceAttempts,
                     eligibility,
                     isWinner,
                     hasCertificate: !!(isWinner && round.certificatesReleased && round.certificateTemplate?.data)
@@ -156,9 +234,9 @@ module.exports = async function (fastify, opts) {
             }
 
             // Verify if student is a "winner" (Top N)
-            const submissions = await Submission.find({ 
-                round: roundId, 
-                status: { $in: ['SUBMITTED', 'COMPLETED'] } 
+            const submissions = await Submission.find({
+                round: roundId,
+                status: { $in: ['SUBMITTED', 'COMPLETED'] }
             })
                 .sort({ score: -1 })
                 .limit(round.winnerLimit || 10)
@@ -172,8 +250,8 @@ module.exports = async function (fastify, opts) {
             // Generate the certificate from DB
             const templateFile = round.certificateTemplate;
 
-           if (!templateFile || !templateFile.data) return reply.code(400).send({ error: 'Certificate template not assigned or missing in DB for this round.' });
-           const templateBuffer = templateFile.data;
+            if (!templateFile || !templateFile.data) return reply.code(400).send({ error: 'Certificate template not assigned or missing in DB for this round.' });
+            const templateBuffer = templateFile.data;
             const contentType = templateFile.contentType || 'image/png';
 
             const user = await User.findById(studentId);
@@ -186,48 +264,48 @@ module.exports = async function (fastify, opts) {
                 const pdfDoc = await PDFLibDoc.load(templateBuffer);
                 const { StandardFonts, rgb } = require('pdf-lib');
                 const helveticaFont = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
-                
+
                 const pages = pdfDoc.getPages();
                 const firstPage = pages[0];
                 const { width, height } = firstPage.getSize();
-                
+
                 const fontSize = 40;
                 const textWidth = helveticaFont.widthOfTextAtSize(studentName, fontSize);
-                
+
                 firstPage.drawText(studentName, {
                     x: (width - textWidth) / 2,
                     y: height / 2.2,
                     size: fontSize,
                     font: helveticaFont,
-                    color: rgb(30/255, 41/255, 59/255) // #1e293b
+                    color: rgb(30 / 255, 41 / 255, 59 / 255) // #1e293b
                 });
 
                 pdfBuffer = Buffer.from(await pdfDoc.save());
             } else {
                 // Use pdfkit for image templates (existing logic)
 
-            const doc = new PDFDocument({
-                layout: 'landscape',
-                size: 'A4',
-                margin: 0
-            });
+                const doc = new PDFDocument({
+                    layout: 'landscape',
+                    size: 'A4',
+                    margin: 0
+                });
 
-            const chunks = [];
-            doc.on('data', chunk => chunks.push(chunk));
+                const chunks = [];
+                doc.on('data', chunk => chunks.push(chunk));
 
- doc.image(templateBuffer, 0, 0, { width: doc.page.width, height: doc.page.height });            doc.font('Helvetica-Bold').fontSize(40).fillColor('#1e293b');
-            
-            const textWidth = doc.widthOfString(studentName);
-            const x = (doc.page.width - textWidth) / 2;
-            const y = doc.page.height / 2.2;
+                doc.image(templateBuffer, 0, 0, { width: doc.page.width, height: doc.page.height }); doc.font('Helvetica-Bold').fontSize(40).fillColor('#1e293b');
 
-            doc.text(studentName, x, y);
-            doc.end();
+                const textWidth = doc.widthOfString(studentName);
+                const x = (doc.page.width - textWidth) / 2;
+                const y = doc.page.height / 2.2;
 
-            pdfBuffer = await new Promise((resolve) => {
-                doc.on('end', () => resolve(Buffer.concat(chunks)));
-            });
-        }
+                doc.text(studentName, x, y);
+                doc.end();
+
+                pdfBuffer = await new Promise((resolve) => {
+                    doc.on('end', () => resolve(Buffer.concat(chunks)));
+                });
+            }
 
             reply.header('Content-Type', 'application/pdf');
             reply.header('Content-Disposition', `attachment; filename=${studentName.replace(/\s+/g, '_')}_certificate.pdf`);
@@ -444,7 +522,7 @@ module.exports = async function (fastify, opts) {
         try {
             const round = await Round.findById(roundId);
             if (!round) return reply.code(404).send({ error: 'Round not found' });
- 
+
             // ─── Time Window Check ──────────────────────────────────────────────────
             const now = new Date();
             if (round.startTime && now < new Date(round.startTime)) {
@@ -1143,38 +1221,73 @@ module.exports = async function (fastify, opts) {
      * PRACTICE MODE
      * POST /api/rounds/:roundId/practice-start
      * Auth: Student
-     *
-     * Lets a student "enter" practice mode with ZERO DB writes.
-     * No Submission document is created — this is purely a gate-check +
-     * metadata return so the frontend can start a cosmetic countdown timer.
-     *
-     * Guards:
-     *  - Round must exist
-     *  - Round.isPracticeEnabled must be true
      */
     fastify.post('/:roundId/practice-start', { preValidation: [fastify.authenticate] }, async (request, reply) => {
         const { roundId } = request.params;
+        const studentId = request.user.userId;
 
         if (!mongoose.Types.ObjectId.isValid(roundId)) {
             return reply.code(400).send({ error: 'Invalid Round ID' });
         }
 
         try {
-            const round = await Round.findById(roundId).select('name durationMinutes testDurationMinutes isPracticeEnabled practiceQuestionCount questionCount');
+            const round = await Round.findById(roundId).select('name durationMinutes testDurationMinutes isPracticeEnabled practiceQuestionCount questionCount maxPracticeAttempts shuffleQuestions');
             if (!round) return reply.code(404).send({ error: 'Round not found' });
 
             if (!round.isPracticeEnabled) {
                 return reply.code(403).send({ error: 'Practice mode is not enabled for this round.' });
             }
 
-            // No DB write — purely returning metadata for the frontend
+            // Check existing practice attempts
+            const attemptCount = await PracticeSubmission.countDocuments({ student: studentId, round: roundId });
+            const limit = round.maxPracticeAttempts ?? 3;
+
+            // Check if there's an IN_PROGRESS session
+            let practiceSub = await PracticeSubmission.findOne({ student: studentId, round: roundId, status: 'IN_PROGRESS' });
+
+            if (!practiceSub) {
+                if (attemptCount >= limit) {
+                    return reply.code(403).send({
+                        error: 'Maximum Practice Limit Reached',
+                        message: `You have already attended the practice test ${limit} times for this round. No more attempts are allowed.`
+                    });
+                }
+
+                // Create new practice start
+                practiceSub = new PracticeSubmission({
+                    student: studentId,
+                    round: roundId,
+                    startedAt: new Date(),
+                    status: 'IN_PROGRESS'
+                });
+
+                // Assign Questions (similar to normal test logic)
+                const Question = require('../models/Question');
+                let questions = await Question.find({ linkedRounds: roundId }).select('_id order').lean();
+
+                if (round.shuffleQuestions) {
+                    for (let i = questions.length - 1; i > 0; i--) {
+                        const j = Math.floor(Math.random() * (i + 1));
+                        [questions[i], questions[j]] = [questions[j], questions[i]];
+                    }
+                }
+
+                const cap = round.practiceQuestionCount ?? round.questionCount ?? null;
+                if (cap !== null && cap > 0) {
+                    questions = questions.slice(0, cap);
+                }
+
+                practiceSub.assignedQuestions = questions.map(q => q._id);
+                await practiceSub.save();
+            }
+
             return reply.code(200).send({
                 success: true,
-                message: 'Practice session started. No answers will be saved.',
+                message: 'Practice session started.',
                 roundName: round.name,
-                // The timer shown to the student is purely cosmetic in practice mode
                 durationMinutes: round.testDurationMinutes || round.durationMinutes,
-                practiceQuestionCount: round.practiceQuestionCount ?? round.questionCount ?? null
+                practiceQuestionCount: practiceSub.assignedQuestions.length,
+                remainingAttempts: limit - attemptCount
             });
 
         } catch (error) {
@@ -1186,55 +1299,54 @@ module.exports = async function (fastify, opts) {
     /**
      * GET /api/rounds/:roundId/practice-questions
      * Auth: Student
-     *
-     * Returns shuffled questions for the round WITHOUT requiring an active
-     * Submission session. The `correctAnswer` field is intentionally stripped
-     * from every question before sending so students can not peek at answers.
-     *
-     * Guards:
-     *  - Round must exist
-     *  - Round.isPracticeEnabled must be true
      */
     fastify.get('/:roundId/practice-questions', { preValidation: [fastify.authenticate] }, async (request, reply) => {
         const { roundId } = request.params;
+        const studentId = request.user.userId;
 
         if (!mongoose.Types.ObjectId.isValid(roundId)) {
             return reply.code(400).send({ error: 'Invalid Round ID' });
         }
 
         try {
-            const round = await Round.findById(roundId).select('isPracticeEnabled shuffleQuestions questionCount practiceQuestionCount');
+            const round = await Round.findById(roundId).select('isPracticeEnabled name type durationMinutes testDurationMinutes');
             if (!round) return reply.code(404).send({ error: 'Round not found' });
 
             if (!round.isPracticeEnabled) {
                 return reply.code(403).send({ error: 'Practice mode is not enabled for this round.' });
             }
 
-            const Question = require('../models/Question');
+            const practiceSub = await PracticeSubmission.findOne({ 
+                student: studentId, 
+                round: roundId,
+                status: 'IN_PROGRESS'
+            }).populate('assignedQuestions');
 
-            // Fetch all questions linked to this round (same query as the real /questions route)
-            let questions = await Question.find({ linkedRounds: roundId })
-                .select('-correctAnswer') // ← Strip answers — students must not see them in practice
-                .lean();
-
-            // Shuffle if the round is configured to do so
-            if (round.shuffleQuestions) {
-                for (let i = questions.length - 1; i > 0; i--) {
-                    const j = Math.floor(Math.random() * (i + 1));
-                    [questions[i], questions[j]] = [questions[j], questions[i]];
-                }
+            if (!practiceSub) {
+                return reply.code(403).send({
+                    error: 'Access Denied',
+                    message: 'You must start the practice session from the dashboard first.'
+                });
             }
 
-            // Cap to practiceQuestionCount (or questionCount) if set
-            const cap = round.practiceQuestionCount ?? round.questionCount ?? null;
-            if (cap !== null && cap > 0) {
-                questions = questions.slice(0, cap);
-            }
+            // Strip answers
+            const questions = practiceSub.assignedQuestions.map(q => {
+                const qo = q.toObject();
+                delete qo.correctAnswer;
+                return qo;
+            });
 
             return reply.code(200).send({
                 success: true,
-                isPractice: true, // Tells the frontend to show the "Practice" banner / disable submit
-                data: questions
+                isPractice: true,
+                data: {
+                    round: {
+                        name: round.name,
+                        type: round.type,
+                        durationMinutes: round.testDurationMinutes || round.durationMinutes
+                    },
+                    questions
+                }
             });
 
         } catch (error) {
@@ -1242,4 +1354,174 @@ module.exports = async function (fastify, opts) {
             return reply.code(500).send({ error: 'Failed to fetch practice questions' });
         }
     });
+
+    /**
+     * POST /api/rounds/:roundId/practice-submit
+     * Auth: Student
+     */
+    fastify.post('/:roundId/practice-submit', { preValidation: [fastify.authenticate] }, async (request, reply) => {
+        const { roundId } = request.params;
+        const { codeContent, pdfUrl, answers } = request.body;
+        const studentId = request.user.userId;
+
+        try {
+            const round = await Round.findById(roundId);
+            if (!round) return reply.code(404).send({ error: 'Round not found' });
+
+            const practiceSub = await PracticeSubmission.findOne({ 
+                student: studentId, 
+                round: roundId,
+                status: 'IN_PROGRESS'
+            });
+
+            if (!practiceSub) {
+                return reply.code(400).send({ error: 'No active practice session found' });
+            }
+
+            practiceSub.completedAt = new Date();
+            practiceSub.status = 'SUBMITTED';
+
+            let parsedAnswers = {};
+            if (answers) {
+                parsedAnswers = typeof answers === 'object' ? answers : {};
+                if (typeof answers === 'string') {
+                    try { parsedAnswers = JSON.parse(answers); } catch (e) { }
+                }
+                practiceSub.codeContent = typeof answers === 'object' ? JSON.stringify(answers) : answers;
+            } else if (codeContent) {
+                practiceSub.codeContent = codeContent;
+                try { parsedAnswers = JSON.parse(codeContent); } catch (e) { }
+            }
+
+            // Auto-grading
+            const Question = require('../models/Question');
+            let autoScore = 0;
+            const parsedAnswersObj = typeof parsedAnswers === 'object' ? parsedAnswers : {};
+
+            const questionsToEval = await Question.find({ _id: { $in: practiceSub.assignedQuestions } });
+            let hasManual = false;
+            
+            for (const q of questionsToEval) {
+                if (q.isManualEvaluation) hasManual = true;
+                if (q.type === 'MCQ') {
+                    const studentAnswer = String(parsedAnswersObj[q._id.toString()] || '').trim();
+                    const correctAns = String(q.correctAnswer || '').trim();
+                    if (correctAns && studentAnswer === correctAns) {
+                        autoScore += (q.points || 0);
+                    }
+                }
+            }
+
+            practiceSub.autoScore = autoScore;
+            practiceSub.score = autoScore; 
+
+            // If no manual evaluation is needed, mark it as COMPLETED immediately
+            if (!hasManual) {
+                practiceSub.status = 'COMPLETED';
+            }
+
+            if (pdfUrl) practiceSub.pdfUrl = pdfUrl;
+            await practiceSub.save();
+
+            return reply.code(200).send({
+                success: true,
+                message: 'Practice round successfully submitted',
+                isGradingPending: hasManual
+            });
+
+        } catch (error) {
+            fastify.log.error(error);
+            return reply.code(500).send({ error: 'Failed to submit practice round' });
+        }
+    });
+
+    /**
+     * GET /api/rounds/:roundId/practice-result
+     * Auth: Student
+     */
+    fastify.get('/:roundId/practice-result', { preValidation: [fastify.authenticate] }, async (request, reply) => {
+        const { roundId } = request.params;
+        const studentId = request.user.userId;
+
+        try {
+            const practiceSub = await PracticeSubmission.findOne({ 
+                student: studentId, 
+                round: roundId,
+                status: { $in: ['SUBMITTED', 'COMPLETED'] }
+            }).sort({ startedAt: -1 }).populate('assignedQuestions');
+
+            if (!practiceSub) {
+                return reply.code(404).send({ error: 'No submitted practice session found' });
+            }
+
+            if (practiceSub.status === 'SUBMITTED') {
+                return reply.code(200).send({
+                    success: true,
+                    status: 'PENDING_EVALUATION',
+                    message: 'Your practice test is being evaluated by admins.',
+                    data: {
+                        score: practiceSub.score,
+                        autoScore: practiceSub.autoScore,
+                        manualScores: practiceSub.manualScores,
+                        completedAt: practiceSub.completedAt,
+                        totalPoints: practiceSub.assignedQuestions.reduce((sum, q) => sum + (q.points || 0), 0)
+                    }
+                });
+            }
+
+            // COMPLETED - show results
+            return reply.code(200).send({
+                success: true,
+                status: 'COMPLETED',
+                data: {
+                    score: practiceSub.score,
+                    autoScore: practiceSub.autoScore,
+                    manualScores: practiceSub.manualScores,
+                    completedAt: practiceSub.completedAt,
+                    totalPoints: practiceSub.assignedQuestions.reduce((sum, q) => sum + (q.points || 0), 0)
+                }
+            });
+        } catch (error) {
+            fastify.log.error(error);
+            return reply.code(500).send({ error: 'Failed to fetch practice result' });
+        }
+    });
+
+    /**
+     * POST /api/rounds/:roundId/practice-autosave
+     * Auth: Student
+     */
+    fastify.post('/:roundId/practice-autosave', { preValidation: [fastify.authenticate] }, async (request, reply) => {
+        const { roundId } = request.params;
+        const { codeContent, answers } = request.body;
+        const studentId = request.user.userId;
+
+        try {
+            const practiceSub = await PracticeSubmission.findOne({ 
+                student: studentId, 
+                round: roundId,
+                status: 'IN_PROGRESS'
+            });
+
+            if (!practiceSub) {
+                return reply.code(404).send({ error: 'No active practice session found' });
+            }
+
+            if (answers !== undefined) {
+                practiceSub.codeContent = typeof answers === 'object' ? JSON.stringify(answers) : answers;
+            } else if (codeContent !== undefined) {
+                practiceSub.codeContent = codeContent;
+            }
+
+            await practiceSub.save();
+            return reply.code(200).send({ success: true });
+            
+        } catch (error) {
+            fastify.log.error(error);
+            return reply.code(500).send({ error: 'Failed to autosave practice progress' });
+        }
+    });
+
 };
+
+

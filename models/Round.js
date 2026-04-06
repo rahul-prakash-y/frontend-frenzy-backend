@@ -103,6 +103,10 @@ const roundSchema = new mongoose.Schema({
         type: Boolean,
         default: true // Admin toggles this to show a "Practice" button to students
     },
+    isPracticeRound: {
+        type: Boolean,
+        default: false // If true, this round is strictly for practice and appears in the Practice Mode tab
+    },
     practiceQuestionCount: {
         type: Number,
         default: null // null = same as questionCount; set to N to cap sample questions shown

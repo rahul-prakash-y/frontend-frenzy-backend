@@ -154,6 +154,43 @@ module.exports = async function (fastify, opts) {
     });
 
     /**
+     * GET /api/rounds/practice
+     * Returns only dedicated practice rounds for the student's Practice Mode tab.
+     * Auth: Student
+     */
+    fastify.get('/practice', { preValidation: [fastify.authenticate] }, async (request, reply) => {
+        try {
+            const { getRoundsCache } = require('../services/cacheService');
+            // Filter to include ONLY dedicated practice rounds
+            const rounds = getRoundsCache().filter(r => r.isPracticeRound === true);
+
+            const studentId = request.user.userId;
+
+            const enrichedRounds = await Promise.all(rounds.map(async (round) => {
+                const [practiceSub, eligibility] = await Promise.all([
+                    PracticeSubmission.findOne({ student: studentId, round: round._id }).sort({ createdAt: -1 }),
+                    isStudentEligible(studentId, round._id)
+                ]);
+
+                const practiceAttempts = await PracticeSubmission.countDocuments({ student: studentId, round: round._id });
+
+                return {
+                    ...round,
+                    myPracticeStatus: practiceSub ? practiceSub.status : null,
+                    myPracticeScore: practiceSub ? practiceSub.score : null,
+                    practiceAttempts,
+                    eligibility
+                };
+            }));
+
+            return reply.code(200).send({ success: true, data: enrichedRounds });
+        } catch (error) {
+            fastify.log.error(error);
+            return reply.code(500).send({ error: 'Failed to fetch practice rounds' });
+        }
+    });
+
+    /**
      * 0. List All Rounds (GET /api/rounds)
      * Auth: Must use the authenticate hook (Student).
      */
@@ -161,7 +198,8 @@ module.exports = async function (fastify, opts) {
         try {
             // Exclude sensitive OTP fields from the initial query for students
             const { getRoundsCache } = require('../services/cacheService');
-            const rounds = getRoundsCache();
+            // Filter out dedicated practice rounds from the main list
+            const rounds = getRoundsCache().filter(r => !r.isPracticeRound);
 
             const studentId = request.user.userId;
             const uploadsDir = path.join(__dirname, '../uploads');

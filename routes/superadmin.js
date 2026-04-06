@@ -46,7 +46,8 @@ module.exports = async function (fastify, opts) {
                 roundOrder: roundOrder || 1,
                 maxParticipants: maxParticipants || null,
                 startTime: startTime || null,
-                endTime: endTime || null
+                endTime: endTime || null,
+                isPracticeRound: request.body.isPracticeRound !== undefined ? Boolean(request.body.isPracticeRound) : false
             });
 
             const savedRound = await round.save();
@@ -383,7 +384,12 @@ module.exports = async function (fastify, opts) {
      */
     fastify.get('/rounds', { preValidation: [fastify.requireAdmin] }, async (request, reply) => {
         try {
-            const rounds = await Round.find({}).select('-startOtp -endOtp -otpIssuedAt').sort({ createdAt: 1 });
+            const { isPracticeRound } = request.query;
+            const filter = {};
+            if (isPracticeRound !== undefined) {
+                filter.isPracticeRound = isPracticeRound === 'true';
+            }
+            const rounds = await Round.find(filter).select('-startOtp -endOtp -otpIssuedAt').sort({ createdAt: 1 });
             return reply.code(200).send({ success: true, data: rounds });
         } catch (error) {
             fastify.log.error(error);
@@ -3088,5 +3094,105 @@ module.exports = async function (fastify, opts) {
         }
     });
 
+    /**
+     * GET /api/superadmin/practice/stats
+     * Returns a summary of practice participation.
+     */
+    fastify.get('/practice/stats', { preValidation: [fastify.requireAdmin] }, async (request, reply) => {
+        try {
+            const practiceRounds = await Round.find({ isPracticeRound: true }).select('_id name');
+            const practiceRoundIds = practiceRounds.map(r => r._id);
+
+            const [submissionStats, totalAttendees] = await Promise.all([
+                PracticeSubmission.aggregate([
+                    { $match: { round: { $in: practiceRoundIds } } },
+                    {
+                        $group: {
+                            _id: "$round",
+                            count: { $sum: 1 },
+                            uniqueStudents: { $addToSet: "$student" }
+                        }
+                    }
+                ]),
+                PracticeSubmission.distinct('student', { round: { $in: practiceRoundIds } })
+            ]);
+
+            const stats = practiceRounds.map(r => {
+                const s = submissionStats.find(stat => stat._id.toString() === r._id.toString());
+                return {
+                    roundId: r._id,
+                    name: r.name,
+                    submissionCount: s ? s.count : 0,
+                    uniqueStudentCount: s ? s.uniqueStudents.length : 0
+                };
+            });
+
+            return reply.send({
+                success: true,
+                data: {
+                    totalUniqueStudents: totalAttendees.length,
+                    perRoundStats: stats
+                }
+            });
+        } catch (error) {
+            fastify.log.error(error);
+            return reply.code(500).send({ error: 'Failed to fetch practice stats' });
+        }
+    });
+
+    /**
+     * GET /api/superadmin/practice/submissions
+     * Dedicated view for all practice submissions.
+     */
+    fastify.get('/practice/submissions', { preValidation: [fastify.requireAdmin] }, async (request, reply) => {
+        try {
+            const { roundId, search, page = 1, limit = 20 } = request.query;
+            let filter = {};
+            
+            if (roundId) {
+                filter.round = roundId;
+            } else {
+                const practiceRounds = await Round.find({ isPracticeRound: true }).select('_id');
+                filter.round = { $in: practiceRounds.map(r => r._id) };
+            }
+
+            if (search) {
+                const searchRegex = new RegExp(search, 'i');
+                const matchingStudents = await User.find({
+                    $or: [{ studentId: searchRegex }, { name: searchRegex }]
+                }).select('_id');
+                filter.student = { $in: matchingStudents.map(s => s._id) };
+            }
+
+            const pageNum = Math.max(1, Number(page));
+            const limitNum = Math.max(1, Number(limit));
+            const skip = (pageNum - 1) * limitNum;
+
+            const [submissions, total] = await Promise.all([
+                PracticeSubmission.find(filter)
+                    .populate('student', 'studentId name department')
+                    .populate('round', 'name')
+                    .sort({ createdAt: -1 })
+                    .skip(skip)
+                    .limit(limitNum)
+                    .lean(),
+                PracticeSubmission.countDocuments(filter)
+            ]);
+
+            return reply.send({
+                success: true,
+                data: submissions,
+                pagination: {
+                    totalRecords: total,
+                    page: pageNum,
+                    limit: limitNum,
+                    totalPages: Math.ceil(total / limitNum)
+                }
+            });
+        } catch (error) {
+            fastify.log.error(error);
+            return reply.code(500).send({ error: 'Failed to fetch practice submissions' });
+        }
+    });
 
 };

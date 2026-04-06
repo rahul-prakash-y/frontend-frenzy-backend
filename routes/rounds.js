@@ -161,18 +161,18 @@ module.exports = async function (fastify, opts) {
     fastify.get('/practice', { preValidation: [fastify.authenticate] }, async (request, reply) => {
         try {
             const { getRoundsCache } = require('../services/cacheService');
-            // Filter to include ONLY dedicated practice rounds
             const rounds = getRoundsCache().filter(r => r.isPracticeRound === true);
-
             const studentId = request.user.userId;
 
-            const enrichedRounds = await Promise.all(rounds.map(async (round) => {
-                const [practiceSub, eligibility] = await Promise.all([
-                    PracticeSubmission.findOne({ student: studentId, round: round._id }).sort({ createdAt: -1 }),
-                    isStudentEligible(studentId, round._id)
-                ]);
+            // Batch fetch all practice submissions for this student
+            const practiceSubmissions = await PracticeSubmission.find({ student: studentId })
+                .sort({ createdAt: -1 })
+                .lean();
 
-                const practiceAttempts = await PracticeSubmission.countDocuments({ student: studentId, round: round._id });
+            const enrichedRounds = await Promise.all(rounds.map(async (round) => {
+                const practiceSub = practiceSubmissions.find(s => s.round.toString() === round._id.toString());
+                const practiceAttempts = practiceSubmissions.filter(s => s.round.toString() === round._id.toString()).length;
+                const eligibility = await isStudentEligible(studentId, round._id, round);
 
                 return {
                     ...round,
@@ -196,22 +196,22 @@ module.exports = async function (fastify, opts) {
      */
     fastify.get('/', { preValidation: [fastify.authenticate] }, async (request, reply) => {
         try {
-            // Exclude sensitive OTP fields from the initial query for students
             const { getRoundsCache } = require('../services/cacheService');
-            // Filter out dedicated practice rounds from the main list
             const rounds = getRoundsCache().filter(r => !r.isPracticeRound);
-
             const studentId = request.user.userId;
-            const uploadsDir = path.join(__dirname, '../uploads');
 
+            // Batch fetch all submissions for this student to avoid N+1 overhead
+            const [allSubmissions, allPracticeSubs] = await Promise.all([
+                Submission.find({ student: studentId }).lean(),
+                PracticeSubmission.find({ student: studentId }).sort({ createdAt: -1 }).lean()
+            ]);
 
             // Enrich rounds with the student's submission status & eligibility
             const enrichedRounds = await Promise.all(rounds.map(async (round) => {
-                const [submission, practiceSub, eligibility] = await Promise.all([
-                    Submission.findOne({ student: studentId, round: round._id }).select('status score'),
-                    PracticeSubmission.findOne({ student: studentId, round: round._id }).sort({ createdAt: -1 }),
-                    isStudentEligible(studentId, round._id)
-                ]);
+                const submission = allSubmissions.find(s => s.round.toString() === round._id.toString());
+                const practiceSub = allPracticeSubs.find(s => s.round.toString() === round._id.toString());
+                const practiceAttempts = allPracticeSubs.filter(s => s.round.toString() === round._id.toString()).length;
+                const eligibility = await isStudentEligible(studentId, round._id, round);
 
                 // Determine if student is a "winner" if certificates are released
                 let isWinner = false;
@@ -232,9 +232,6 @@ module.exports = async function (fastify, opts) {
                         isWinner = topSubmissions.some(s => s.student.toString() === studentId);
                     }
                 }
-
-                // Check practice stats
-                const practiceAttempts = await PracticeSubmission.countDocuments({ student: studentId, round: round._id });
 
                 return {
                     ...round,

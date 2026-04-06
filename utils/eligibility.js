@@ -87,8 +87,8 @@ function invalidateRankingCache() {
 /**
  * Checks if a student is eligible for a specific round.
  */
-async function isStudentEligible(studentObjectId, roundId) {
-    const round = await Round.findById(roundId);
+async function isStudentEligible(studentObjectId, roundId, roundObject = null) {
+    const round = roundObject || await Round.findById(roundId);
     if (!round) return { eligible: false, message: 'Round not found' };
 
     // 1. If no limit is set, everyone is eligible

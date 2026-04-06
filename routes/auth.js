@@ -40,7 +40,7 @@ module.exports = async function (fastify, opts) {
                 return reply.code(401).send({ error: 'Invalid credentials' });
             }
 
-            const team = await Team.findOne({ members: user._id });
+            const team = await Team.findOne({ members: user._id }).populate('members', 'name studentId');
 
             // Exact JWT Payload Structure definition
             const payload = {

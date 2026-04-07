@@ -504,7 +504,7 @@ module.exports = async function (fastify, opts) {
                 title, description, inputFormat, outputFormat,
                 sampleInput, sampleOutput, difficulty, points,
                 order, type, category, options, correctAnswer,
-                isManualEvaluation, assignedAdmin
+                isManualEvaluation, assignedAdmin, problemImage
             } = request.body;
 
             if (!title || !description) {
@@ -533,7 +533,8 @@ module.exports = async function (fastify, opts) {
                 options: options || [],
                 correctAnswer: correctAnswer || '',
                 isManualEvaluation: isManualEvaluation || false,
-                assignedAdmin: isManualEvaluation ? assignedAdmin : null
+                assignedAdmin: isManualEvaluation ? assignedAdmin : null,
+                problemImage: problemImage || ''
             });
 
             await question.save();
@@ -648,7 +649,7 @@ module.exports = async function (fastify, opts) {
                 title, description, inputFormat, outputFormat,
                 sampleInput, sampleOutput, difficulty, points,
                 type, category, options, correctAnswer,
-                isManualEvaluation, assignedAdmin
+                isManualEvaluation, assignedAdmin, problemImage
             } = request.body;
 
             if (!title || !description) {
@@ -672,7 +673,8 @@ module.exports = async function (fastify, opts) {
                 options: options || [],
                 correctAnswer: correctAnswer || '',
                 isManualEvaluation: isManualEvaluation || false,
-                assignedAdmin: isManualEvaluation ? assignedAdmin : null
+                assignedAdmin: isManualEvaluation ? assignedAdmin : null,
+                problemImage: problemImage || ''
             });
 
             await question.save();
@@ -782,7 +784,8 @@ module.exports = async function (fastify, opts) {
                     category,
                     options,
                     correctAnswer: String(row.correctAnswer || row.Correct_Answer || ''),
-                    isManualEvaluation
+                    isManualEvaluation,
+                    problemImage: row.problemImage || row.Problem_Image || row.image || ''
                 });
             }
 
@@ -1052,7 +1055,7 @@ module.exports = async function (fastify, opts) {
                 for (const rs of rubricScores) {
                     const rubricDef = question.rubrics.find(r => r.criterion === rs.criterion);
                     const maxScore = rubricDef ? rubricDef.maxScore : Infinity;
-                    
+
                     if (rs.score > maxScore) {
                         return reply.code(400).send({ error: `Score for "${rs.criterion}" exceeds maximum allowed (${maxScore})` });
                     }
@@ -1071,18 +1074,18 @@ module.exports = async function (fastify, opts) {
                 ms => ms.questionId && ms.questionId.toString() === questionId.toString()
             );
 
-           const scoreEntry = {
-                    questionId,
-                    adminId,
-                    score: finalQuestionScore,
-                    rubricScores: validatedRubricScores,
-                    feedback: feedback || '',
-                    evaluatedAt: new Date()
-                };
+            const scoreEntry = {
+                questionId,
+                adminId,
+                score: finalQuestionScore,
+                rubricScores: validatedRubricScores,
+                feedback: feedback || '',
+                evaluatedAt: new Date()
+            };
 
             if (existingIndex >= 0) {
                 submission.manualScores[existingIndex] = scoreEntry;
-            }else {
+            } else {
                 submission.manualScores.push(scoreEntry);
             }
 
@@ -1167,10 +1170,10 @@ module.exports = async function (fastify, opts) {
         }
     });
 
-     /**
-     * GET /api/superadmin/questions/rubric-suggestions
-     * returns unique rubrics found in the last 20 questions of a given category
-     */
+    /**
+    * GET /api/superadmin/questions/rubric-suggestions
+    * returns unique rubrics found in the last 20 questions of a given category
+    */
     fastify.get('/questions/rubric-suggestions', { preValidation: [fastify.requireAdmin] }, async (request, reply) => {
         try {
             const { category } = request.query;
@@ -3148,7 +3151,7 @@ module.exports = async function (fastify, opts) {
         try {
             const { roundId, search, page = 1, limit = 20 } = request.query;
             let filter = {};
-            
+
             if (roundId) {
                 filter.round = roundId;
             } else {

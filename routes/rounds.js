@@ -1049,7 +1049,8 @@ module.exports = async function (fastify, opts) {
                         points: q.points,
                         type: q.type,
                         category: q.category,
-                        options: q.options
+                        options: q.options,
+                        problemImage: q.problemImage
                     })),
                     debugInfo: {
                         fetchedQuestionsCount: assignedQuestions.length,

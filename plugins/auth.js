@@ -138,4 +138,17 @@ module.exports = fp(async function (fastify, opts) {
             if (!reply.sent) reply.code(401).send({ error: 'Unauthorized: Invalid or missing token' });
         }
     });
+
+    // ── Super-Master-only (Database Access) ───────────────────────────────────
+    fastify.decorate('requireSuperMaster', async function (request, reply) {
+        try {
+            await request.jwtVerify();
+            if (request.user.role !== 'SUPER_MASTER') {
+                return reply.code(403).send({ error: 'Forbidden: Super Master access required' });
+            }
+            await checkForceLogout(request, reply);
+        } catch (err) {
+            if (!reply.sent) reply.code(401).send({ error: 'Unauthorized: Invalid or missing token' });
+        }
+    });
 });

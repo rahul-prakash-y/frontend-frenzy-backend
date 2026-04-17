@@ -2,6 +2,7 @@ const bcrypt = require('bcryptjs');
 const User = require('../models/User');
 const { logActivity } = require('../utils/logger');
 const Team = require('../models/Team');
+const Slot = require('../models/Slot');
 
 
 module.exports = async function (fastify, opts) {
@@ -40,7 +41,7 @@ module.exports = async function (fastify, opts) {
                 return reply.code(401).send({ error: 'Invalid credentials' });
             }
 
-            const team = await Team.findOne({ members: user._id }).populate('members', 'name studentId');
+            const team = await Team.findOne({ members: user._id }).populate('members', 'name studentId isOnboarded');
 
             // Exact JWT Payload Structure definition
             const payload = {
@@ -73,10 +74,21 @@ module.exports = async function (fastify, opts) {
                 ip: request.ip
             });
 
+            // Fetch slot timings assigned to the student's team
+            let slots = [];
+            if (team) {
+                slots = await Slot.find({ teams: team._id })
+                    .populate('round', 'name status')
+                    .select('label startTime endTime round')
+                    .sort({ startTime: 1 })
+                    .lean();
+            }
+
             return reply.code(200).send({
                 success: true,
                 token,
-                user: payload
+                user: payload,
+                slots
             });
 
         } catch (error) {

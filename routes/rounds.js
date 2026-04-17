@@ -5,6 +5,7 @@ const Submission = require('../models/Submission');
 const User = require('../models/User');
 const PracticeSubmission = require('../models/PracticeSubmission');
 const AdminOTP = require('../models/AdminOTP');
+const Slot = require('../models/Slot');
 const { logActivity } = require('../utils/logger');
 const { isStudentEligible } = require('../utils/eligibility');
 const fs = require('fs');
@@ -571,6 +572,30 @@ module.exports = async function (fastify, opts) {
                     error: 'Test Ended',
                     message: `This test ended at ${new Date(round.endTime).toLocaleString()}.`
                 });
+            }
+
+            // ─── Slot-Based Timing Check ─────────────────────────────────────────────
+            // If the round has slots defined AND the student is in a team with an
+            // assigned slot, enforce the slot window. Rounds without slots are unaffected.
+            const student = await User.findById(studentId).select('team').lean();
+            if (student && student.team) {
+                const assignedSlot = await Slot.findOne({ round: roundId, teams: student.team }).lean();
+                if (assignedSlot) {
+                    if (now < new Date(assignedSlot.startTime)) {
+                        return reply.code(403).send({
+                            error: 'Slot Not Active',
+                            message: `Your assigned slot "${assignedSlot.label}" starts at ${new Date(assignedSlot.startTime).toLocaleString()}.`,
+                            slot: { label: assignedSlot.label, startTime: assignedSlot.startTime, endTime: assignedSlot.endTime }
+                        });
+                    }
+                    if (now > new Date(assignedSlot.endTime)) {
+                        return reply.code(403).send({
+                            error: 'Slot Expired',
+                            message: `Your assigned slot "${assignedSlot.label}" ended at ${new Date(assignedSlot.endTime).toLocaleString()}.`,
+                            slot: { label: assignedSlot.label, startTime: assignedSlot.startTime, endTime: assignedSlot.endTime }
+                        });
+                    }
+                }
             }
 
             // ─── Participation Eligibility Check ─────────────────────────────────────

@@ -7,6 +7,8 @@ const ActivityLog = require('../models/ActivityLog');
 const User = require('../models/User');
 const AdminOTP = require('../models/AdminOTP');
 const Team = require('../models/Team');
+const Slot = require('../models/Slot');
+const SlotChangeRequest = require('../models/SlotChangeRequest');
 const { logActivity } = require('../utils/logger');
 const bcrypt = require('bcryptjs');
 const XLSX = require('xlsx');
@@ -1809,57 +1811,44 @@ module.exports = async function (fastify, opts) {
             const student = await User.findById(id).populate('team').lean();
             if (!student) return reply.code(404).send({ error: 'Student not found' });
 
-            const submissions = await Submission.find({ student: id })
-                .populate('round')
-                .sort({ 'round.createdAt': 1 })
-                .lean();
+            const [contestSubmissions, practiceSubmissions] = await Promise.all([
+                Submission.find({ student: id }).populate('round').lean(),
+                PracticeSubmission.find({ student: id }).populate('round').lean()
+            ]);
 
             const pdfBuffer = await new Promise(async (resolve, reject) => {
                 try {
-                    const doc = new PDFDocument({ margin: 40, size: 'A4' });
+                    const doc = new PDFDocument({ margin: 40, size: 'A4', bufferPages: true });
                     let buffers = [];
                     doc.on('data', buffers.push.bind(buffers));
                     doc.on('end', () => resolve(Buffer.concat(buffers)));
                     doc.on('error', reject);
 
-                    // --- Colors & Styles ---
                     const NAVY = '#1e293b';
                     const PURPLE = '#581c87';
-                    const ACCENT = '#f59e0b'; // Amber/Yellow
+                    const AMBER = '#f59e0b';
                     const LIGHT_BLUE = '#eff6ff';
 
-                    // --- Header Section ---
                     doc.font('Helvetica-Bold').fontSize(22).fillColor(NAVY).text('BANNARI AMMAN INSTITUTE OF', { align: 'center' });
                     doc.text('TECHNOLOGY', { align: 'center' });
                     doc.moveDown(0.2);
                     doc.fontSize(16).fillColor(PURPLE).text('CODE CIRCLE CLUB', { align: 'center' });
                     doc.moveDown(0.5);
 
-                    // Yellow Bar
                     const pageWidth = doc.page.width;
                     const barWidth = 100;
-                    doc.rect((pageWidth - barWidth) / 2, doc.y, barWidth, 3).fill(ACCENT);
+                    doc.rect((pageWidth - barWidth) / 2, doc.y, barWidth, 3).fill(AMBER);
                     doc.moveDown(0.8);
 
-                    // Pill Shape for "C-CAP REPORT"
-                    const pillWidth = 140;
+                    const pillWidth = 240;
                     const pillHeight = 24;
                     const pillX = (pageWidth - pillWidth) / 2;
                     doc.roundedRect(pillX, doc.y, pillWidth, pillHeight, 12).fill(NAVY);
-                    doc.fillColor('white').fontSize(10).font('Helvetica-Bold').text('C-CAP REPORT', pillX, doc.y + 7, { width: pillWidth, align: 'center' });
+                    doc.fillColor('white').fontSize(10).font('Helvetica-Bold').text('PERFORMANCE ANALYTICS REPORT', pillX, doc.y + 7, { width: pillWidth, align: 'center' });
                     doc.moveDown(1.5);
 
-                    // Horizontal Divider
                     doc.moveTo(40, doc.y).lineTo(pageWidth - 40, doc.y).strokeColor('#cbd5e1').lineWidth(1).stroke();
-                    doc.moveDown(0.2);
-                    doc.moveTo(40, doc.y).lineTo(pageWidth - 40, doc.y).strokeColor('#cbd5e1').lineWidth(1).stroke();
-                    doc.moveDown(1);
-
-                    // Styled Title Box
-                    const titleBoxY = doc.y;
-                    doc.roundedRect(40, titleBoxY, pageWidth - 80, 45, 8).fill(LIGHT_BLUE).strokeColor('#e2e8f0').stroke();
-                    doc.fillColor(NAVY).fontSize(18).text('STUDENT REPORT #1', 55, titleBoxY + 14);
-                    doc.moveDown(2.5);
+                    doc.moveDown(1.5);
 
                     // --- 1. STUDENT PROFILE ---
                     doc.fillColor(PURPLE).rect(40, doc.y, 4, 18).fill();
@@ -1868,7 +1857,7 @@ module.exports = async function (fastify, opts) {
 
                     const profileY = doc.y;
                     const col1X = 60;
-                    const col2X = pageWidth / 2 + 50; // Increased padding for center space
+                    const col2X = pageWidth / 2 + 50;
 
                     const drawField = (label, value, x, y, width) => {
                         doc.fillColor('#64748b').fontSize(10).text(label.toUpperCase(), x, y);
@@ -1876,37 +1865,33 @@ module.exports = async function (fastify, opts) {
                         doc.moveTo(x, y + 14).lineTo(x + (pageWidth / 2) - 30, y + 14).strokeColor('#f1f5f9').dash(2, { space: 2 }).stroke().undash();
                     };
 
-                    const attendedCount = submissions.filter(s => s.status !== 'NOT_STARTED').length;
+                    const attendedCount = contestSubmissions.filter(s => s.status !== 'NOT_STARTED').length;
 
                     drawField('Full Name', student.name, col1X, profileY);
                     drawField('Roll Number', student.studentId, col2X, profileY);
                     drawField('Department', student.department, col1X, profileY + 35);
-                    drawField('Current Level', `Level ${attendedCount}`, col2X, profileY + 35);
+                    drawField('Round Stats', `${attendedCount} Contests Attempted`, col2X, profileY + 35);
 
-                    doc.moveDown(4);
+                    doc.moveDown(4.5);
 
-                    // --- 2. ASSESSMENT SUMMARY ---
+                    // --- 2. ASSESSMENT SUMMARY (CONTESTS) ---
                     doc.fillColor(PURPLE).rect(40, doc.y, 4, 18).fill();
-                    doc.fillColor(NAVY).fontSize(14).font('Helvetica-Bold').text('2. ASSESSMENT SUMMARY', 50, doc.y);
+                    doc.fillColor(NAVY).fontSize(14).font('Helvetica-Bold').text('2. CONTEST PERFORMANCE', 50, doc.y);
                     doc.moveDown(1);
 
-                    if (submissions.length > 0) {
+                    if (contestSubmissions.length > 0) {
                         const assessmentRows = [];
-                        for (const s of submissions) {
-                            // Calculate Pass/Fail
+                        for (const s of contestSubmissions) {
                             const questions = await Question.find({
-                                $or: [
-                                    { round: s.round?._id },
-                                    { linkedRounds: s.round?._id }
-                                ]
+                                $or: [{ round: s.round?._id }, { linkedRounds: s.round?._id }]
                             });
                             const totalPoints = questions.reduce((acc, q) => acc + (q.points || 0), 0);
-                            const qualified = (s.score >= totalPoints * 0.5);
-                            const resultText = qualified ? 'QUALIFIED' : 'ELIMINATED';
+                            const qualified = s.score >= totalPoints * 0.5;
+                            const resultText = qualified ? 'PASS' : 'FAIL';
 
                             assessmentRows.push([
                                 new Date(s.createdAt).toLocaleDateString(),
-                                s.round?.name || 'Round',
+                                s.round?.name || 'Untitled Round',
                                 String(s.score ?? 0),
                                 resultText
                             ]);
@@ -1915,47 +1900,59 @@ module.exports = async function (fastify, opts) {
                         const assessmentTable = {
                             headers: [
                                 { label: "Date", property: 'date', width: 100 },
-                                { label: "Level", property: 'level', width: 220 },
+                                { label: "Assessment Title", property: 'level', width: 220 },
                                 { label: "Score", property: 'score', width: 80 },
-                                { label: "Result", property: 'result', width: 100 }
+                                { label: "Status", property: 'result', width: 100 }
                             ],
                             rows: assessmentRows
                         };
 
                         await doc.table(assessmentTable, {
                             prepareHeader: () => doc.font("Helvetica-Bold").fontSize(10).fillColor(NAVY),
-                            prepareRow: (row, indexColumn, indexRow, rectRow, rectCell) => {
+                            prepareRow: (row, indexColumn) => {
                                 doc.font("Helvetica").fontSize(10);
-                                if (indexColumn === 3) { // Result Column
-                                    if (row[3] === 'QUALIFIED') doc.fillColor('#16a34a');
-                                    else doc.fillColor('#dc2626');
+                                if (indexColumn === 3) {
+                                    doc.fillColor(row[3] === 'PASS' ? '#16a34a' : '#dc2626');
                                 } else {
                                     doc.fillColor(NAVY);
                                 }
                             }
                         });
                     } else {
-                        doc.font('Helvetica-Oblique').fontSize(10).fillColor('#94a3b8').text('No assessments found.');
+                        doc.font('Helvetica-Oblique').fontSize(10).fillColor('#94a3b8').text('No contest attempts recorded.');
                     }
                     doc.moveDown(2);
 
-                    // --- 3. CODING CHALLENGE HISTORY ---
+                    // --- 3. PRACTICE PERFORMANCE ---
                     doc.fillColor(PURPLE).rect(40, doc.y, 4, 18).fill();
-                    doc.fillColor(NAVY).fontSize(14).font('Helvetica-Bold').text('3. CODING CHALLENGE HISTORY', 50, doc.y);
+                    doc.fillColor(NAVY).fontSize(14).font('Helvetica-Bold').text('3. PRACTICE SESSIONS', 50, doc.y);
                     doc.moveDown(1);
 
-                    // Fetch coding challenges
-                    const codingSubmissions = submissions.filter(s => s.round?.type === 'CODE' || s.round?.type === 'SQL_CONTEST');
-                    if (codingSubmissions.length > 0) {
-                        // Similar table or list
-                        doc.font('Helvetica').fontSize(10).fillColor(NAVY).text('Challenges attempted across contests: ' + codingSubmissions.length);
-                    } else {
-                        doc.font('Helvetica-Oblique').fontSize(10).fillColor('#94a3b8').text('No coding challenges attempted.');
-                    }
+                    if (practiceSubmissions.length > 0) {
+                        const practiceRows = practiceSubmissions.map(s => ([
+                            new Date(s.createdAt).toLocaleDateString(),
+                            s.round?.name || 'Practice Test',
+                            String(s.score ?? 0),
+                            'COMPLETED'
+                        ]));
 
-                    // --- Footer Decor ---
-                    const footerY = doc.page.height - 60;
-                    doc.rect(40, footerY, doc.page.width - 80, 6).fill(NAVY);
+                        const practiceTable = {
+                            headers: [
+                                { label: "Date", property: 'date', width: 100 },
+                                { label: "Practice Environment", property: 'level', width: 220 },
+                                { label: "Score", property: 'score', width: 80 },
+                                { label: "Activity", property: 'result', width: 100 }
+                            ],
+                            rows: practiceRows
+                        };
+
+                        await doc.table(practiceTable, {
+                            prepareHeader: () => doc.font("Helvetica-Bold").fontSize(10).fillColor(NAVY),
+                            prepareRow: () => doc.font("Helvetica").fontSize(10).fillColor(NAVY)
+                        });
+                    } else {
+                        doc.font('Helvetica-Oblique').fontSize(10).fillColor('#94a3b8').text('No practice records found.');
+                    }
 
                     doc.end();
                 } catch (err) {
@@ -2626,46 +2623,41 @@ module.exports = async function (fastify, opts) {
 
             // Fetch all teams to calculate rank
             const allTeams = await Team.find({}).lean();
-            const allSubmissions = await Submission.find({ score: { $ne: null } }).lean();
+            const [allSubmissions, allPracticeSubmissions] = await Promise.all([
+                Submission.find({ score: { $ne: null } }).lean(),
+                PracticeSubmission.find({ score: { $ne: null } }).lean()
+            ]);
 
             const scores = allTeams.map(t => {
                 const teamSubmissions = allSubmissions.filter(s =>
                     t.members.some(mId => mId.toString() === s.student.toString())
                 );
+                const teamPractice = allPracticeSubmissions.filter(s =>
+                    t.members.some(mId => mId.toString() === s.student.toString())
+                );
+                
+                const contestScore = teamSubmissions.reduce((sum, s) => sum + (s.score || 0), 0);
+                const practiceScore = teamPractice.reduce((sum, s) => sum + (s.score || 0), 0);
+                
                 return {
                     id: t._id.toString(),
-                    totalScore: teamSubmissions.reduce((sum, s) => sum + (s.score || 0), 0)
+                    totalScore: contestScore + practiceScore
                 };
             }).sort((a, b) => b.totalScore - a.totalScore);
 
             const rank = scores.findIndex(s => s.id === teamId) + 1;
-            const teamTotalScore = scores.find(s => s.id === teamId)?.totalScore || 0;
-
-            // Fetch individual scores for team members
-            const memberStats = await Promise.all(team.members.map(async (m) => {
-                const memberSubmissions = allSubmissions.filter(s => s.student.toString() === m._id.toString());
-                const totalScore = memberSubmissions.reduce((sum, s) => sum + (s.score || 0), 0);
-                const attended = memberSubmissions.filter(s => s.status !== 'NOT_STARTED').length;
-                return {
-                    name: m.name,
-                    studentId: m.studentId,
-                    attended,
-                    score: totalScore
-                };
-            }));
 
             const pdfBuffer = await new Promise(async (resolve, reject) => {
                 try {
-                    const doc = new PDFDocument({ margin: 40, size: 'A4' });
+                    const doc = new PDFDocument({ margin: 40, size: 'A4', bufferPages: true });
                     let buffers = [];
                     doc.on('data', buffers.push.bind(buffers));
                     doc.on('end', () => resolve(Buffer.concat(buffers)));
                     doc.on('error', reject);
 
-                    // Styles
                     const NAVY = '#1e293b';
                     const PURPLE = '#581c87';
-                    const ACCENT = '#f59e0b';
+                    const AMBER = '#f59e0b';
                     const LIGHT_BLUE = '#eff6ff';
 
                     // Header
@@ -2675,58 +2667,91 @@ module.exports = async function (fastify, opts) {
                     doc.fontSize(16).fillColor(PURPLE).text('CODE CIRCLE CLUB', { align: 'center' });
                     doc.moveDown(0.5);
                     const pageWidth = doc.page.width;
-                    doc.rect((pageWidth - 100) / 2, doc.y, 100, 3).fill(ACCENT);
+                    doc.rect((pageWidth - 100) / 2, doc.y, 100, 3).fill(AMBER);
                     doc.moveDown(0.8);
-                    const chipWidth = 180; // Increased from 160 for padding
+                    const chipWidth = 240;
                     const chipHeight = 24;
                     const chipX = (pageWidth - chipWidth) / 2;
                     doc.roundedRect(chipX, doc.y, chipWidth, chipHeight, 12).fill(NAVY);
-                    doc.fillColor('white').fontSize(10).font('Helvetica-Bold').text('TEAM PERFORMANCE REPORT', chipX, doc.y + 7, { width: chipWidth, align: 'center' });
+                    doc.fillColor('white').fontSize(10).font('Helvetica-Bold').text('TEAM PERFORMANCE ANALYTICS', chipX, doc.y + 7, { width: chipWidth, align: 'center' });
                     doc.moveDown(2);
+
+                    // Fetch submissions for all members
+                    const [contestSubmissions, practiceSubmissions] = await Promise.all([
+                        Submission.find({ student: { $in: team.members.map(m => m._id) } }).lean(),
+                        PracticeSubmission.find({ student: { $in: team.members.map(m => m._id) } }).lean()
+                    ]);
+
+                    const teamMemberStats = team.members.map(member => {
+                        const mContests = contestSubmissions.filter(s => s.student.toString() === member._id.toString());
+                        const mPractice = practiceSubmissions.filter(s => s.student.toString() === member._id.toString());
+                        
+                        const contestScore = mContests.reduce((sum, s) => sum + (s.score || 0), 0);
+                        const practiceScore = mPractice.reduce((sum, s) => sum + (s.score || 0), 0);
+                        const totalScore = contestScore + practiceScore;
+
+                        return { 
+                            name: member.name, 
+                            studentId: member.studentId, 
+                            contestScore, 
+                            practiceScore, 
+                            totalScore,
+                            attended: mContests.filter(s => s.status !== 'NOT_STARTED').length
+                        };
+                    });
+
+                    const aggTeamScore = teamMemberStats.reduce((sum, s) => sum + s.totalScore, 0);
 
                     // Team Info Box
                     const infoY = doc.y;
                     doc.roundedRect(40, infoY, pageWidth - 80, 70, 10).fill(LIGHT_BLUE).strokeColor('#e2e8f0').stroke();
 
                     doc.fillColor(NAVY).fontSize(18).font('Helvetica-Bold').text(team.name.toUpperCase(), 60, infoY + 15);
-                    doc.fontSize(10).font('Helvetica').fillColor('#64748b').text(`RANK #${rank} OVERALL`, 60, infoY + 38);
+                    doc.fontSize(10).font('Helvetica').fillColor('#64748b').text(`RANK #${rank} OVERALL PERFORMANCE`, 60, infoY + 38);
 
-                    doc.fillColor(PURPLE).fontSize(24).font('Helvetica-Bold').text(String(teamTotalScore), pageWidth - 200, infoY + 15, { width: 140, align: 'right' });
-                    doc.fontSize(10).font('Helvetica-Bold').fillColor(PURPLE).text('AGGREGATE POINTS', pageWidth - 200, infoY + 42, { width: 140, align: 'right' });
+                    doc.fillColor(PURPLE).fontSize(24).font('Helvetica-Bold').text(aggTeamScore.toFixed(2), pageWidth - 200, infoY + 15, { width: 140, align: 'right' });
+                    doc.fontSize(10).font('Helvetica-Bold').fillColor(PURPLE).text('AGGREGATE TEAM POINTS', pageWidth - 200, infoY + 42, { width: 140, align: 'right' });
 
                     doc.moveDown(4);
 
-                    // 1. SQUAD OVERVIEW
+                    // 1. SQUAD CONTRIBUTION OVERVIEW
                     doc.fillColor(PURPLE).rect(40, doc.y, 4, 18).fill();
-                    doc.fillColor(NAVY).fontSize(14).font('Helvetica-Bold').text('1. SQUAD OVERVIEW', 50, doc.y);
+                    doc.fillColor(NAVY).fontSize(14).font('Helvetica-Bold').text('1. SQUAD CONTRIBUTION OVERVIEW', 50, doc.y);
                     doc.moveDown(1);
 
                     const table = {
                         headers: [
-                            { label: "Roll Number", property: 'studentId', width: 100 },
-                            { label: "Member Name", property: 'name', width: 200 },
-                            { label: "Attended", property: 'attended', width: 80 },
-                            { label: "Contribution", property: 'score', width: 100 }
+                            { label: "Roll Number", property: 'studentId', width: 90 },
+                            { label: "Member Name", property: 'name', width: 160 },
+                            { label: "Contests", property: 'contest', width: 70 },
+                            { label: "Practice", property: 'practice', width: 70 },
+                            { label: "Total Pts", property: 'total', width: 90 }
                         ],
-                        rows: memberStats.map(m => [
+                        rows: teamMemberStats.map(m => [
                             m.studentId,
                             m.name,
-                            String(m.attended),
-                            String(m.score)
+                            m.contestScore.toFixed(1),
+                            m.practiceScore.toFixed(1),
+                            m.totalScore.toFixed(1)
                         ])
                     };
 
                     await doc.table(table, {
-                        prepareHeader: () => doc.font("Helvetica-Bold").fontSize(10).fillColor(NAVY),
+                        prepareHeader: () => doc.font("Helvetica-Bold").fontSize(9).fillColor(NAVY),
                         prepareRow: (row, indexColumn, indexRow, rectRow, rectCell) => {
-                            doc.font("Helvetica").fontSize(10).fillColor(NAVY);
+                            doc.font("Helvetica").fontSize(9).fillColor(NAVY);
                             if (indexRow % 2 === 0) doc.addBackground(rectRow, LIGHT_BLUE, 0.4);
                         }
                     });
 
-                    // Footer
-                    const footerY = doc.page.height - 60;
-                    doc.rect(40, footerY, doc.page.width - 80, 6).fill(NAVY);
+                    // Footer (on all pages)
+                    const totalPages = doc.bufferedPageRange().count;
+                    for (let i = 0; i < totalPages; i++) {
+                        doc.switchToPage(i);
+                        const footerY = doc.page.height - 40;
+                        doc.moveTo(40, footerY).lineTo(doc.page.width - 40, footerY).strokeColor(AMBER).lineWidth(2).stroke();
+                        doc.fillColor('#94a3b8').fontSize(8).text('Generated Team Performance Analytics · Code Circle Club Portal', 40, footerY + 8, { align: 'center' });
+                    }
 
                     doc.end();
                 } catch (err) {
@@ -3195,6 +3220,282 @@ module.exports = async function (fastify, opts) {
         } catch (error) {
             fastify.log.error(error);
             return reply.code(500).send({ error: 'Failed to fetch practice submissions' });
+        }
+    });
+
+    /**
+     * SLOT MANAGEMENT ROUTES
+     */
+
+    /**
+     * POST /api/superadmin/slots
+     * Create a new time slot for a round.
+     * Body: { roundId, label, startTime, endTime, teams: [teamId], maxCapacity? }
+     */
+    fastify.post('/slots', { preValidation: [fastify.requireAdmin] }, async (request, reply) => {
+        try {
+            const { roundId, label, startTime, endTime, teams, maxCapacity } = request.body;
+
+            if (!roundId || !label || !startTime || !endTime) {
+                return reply.code(400).send({ error: 'roundId, label, startTime, and endTime are required' });
+            }
+
+            const round = await Round.findById(roundId);
+            if (!round) return reply.code(404).send({ error: 'Round not found' });
+
+            if (new Date(startTime) >= new Date(endTime)) {
+                return reply.code(400).send({ error: 'startTime must be before endTime' });
+            }
+
+            const slot = new Slot({
+                round: roundId,
+                label: label.trim(),
+                startTime: new Date(startTime),
+                endTime: new Date(endTime),
+                teams: teams || [],
+                maxCapacity: maxCapacity || null
+            });
+            await slot.save();
+
+            await logActivity({
+                action: 'CREATED',
+                performedBy: { userId: request.user?.userId, name: request.user?.name, role: request.user?.role },
+                target: { type: 'Slot', id: slot._id.toString(), label: `${slot.label} for ${round.name}` },
+                ip: request.ip
+            });
+
+            return reply.code(201).send({ success: true, data: slot });
+        } catch (error) {
+            fastify.log.error(error);
+            return reply.code(500).send({ error: 'Failed to create slot' });
+        }
+    });
+
+    /**
+     * GET /api/superadmin/slots?roundId=X
+     * List all slots, optionally filtered by roundId.
+     */
+    fastify.get('/slots', { preValidation: [fastify.requireAdmin] }, async (request, reply) => {
+        try {
+            const { roundId } = request.query;
+            const filter = {};
+            if (roundId) filter.round = roundId;
+
+            const slots = await Slot.find(filter)
+                .populate('round', 'name')
+                .populate('teams', 'name')
+                .sort({ startTime: 1 })
+                .lean();
+
+            return reply.code(200).send({ success: true, data: slots });
+        } catch (error) {
+            fastify.log.error(error);
+            return reply.code(500).send({ error: 'Failed to fetch slots' });
+        }
+    });
+
+    /**
+     * PUT /api/superadmin/slots/:slotId
+     * Update a slot (label, times, teams, maxCapacity).
+     */
+    fastify.put('/slots/:slotId', { preValidation: [fastify.requireAdmin] }, async (request, reply) => {
+        try {
+            const { slotId } = request.params;
+            const { label, startTime, endTime, teams, maxCapacity } = request.body;
+
+            const updateData = {};
+            if (label !== undefined) updateData.label = label.trim();
+            if (startTime !== undefined) updateData.startTime = new Date(startTime);
+            if (endTime !== undefined) updateData.endTime = new Date(endTime);
+            if (teams !== undefined) updateData.teams = teams;
+            if (maxCapacity !== undefined) updateData.maxCapacity = maxCapacity;
+
+            if (updateData.startTime && updateData.endTime && updateData.startTime >= updateData.endTime) {
+                return reply.code(400).send({ error: 'startTime must be before endTime' });
+            }
+
+            const slot = await Slot.findByIdAndUpdate(slotId, updateData, { new: true })
+                .populate('round', 'name')
+                .populate('teams', 'name');
+            if (!slot) return reply.code(404).send({ error: 'Slot not found' });
+
+            await logActivity({
+                action: 'UPDATED',
+                performedBy: { userId: request.user?.userId, name: request.user?.name, role: request.user?.role },
+                target: { type: 'Slot', id: slotId, label: slot.label },
+                ip: request.ip
+            });
+
+            return reply.code(200).send({ success: true, data: slot });
+        } catch (error) {
+            fastify.log.error(error);
+            return reply.code(500).send({ error: 'Failed to update slot' });
+        }
+    });
+
+    /**
+     * DELETE /api/superadmin/slots/:slotId
+     * Delete a slot.
+     */
+    fastify.delete('/slots/:slotId', { preValidation: [fastify.requireAdmin] }, async (request, reply) => {
+        try {
+            const { slotId } = request.params;
+            const slot = await Slot.findByIdAndDelete(slotId);
+            if (!slot) return reply.code(404).send({ error: 'Slot not found' });
+
+            // Also clean up any pending change requests for this slot
+            await SlotChangeRequest.deleteMany({
+                $or: [{ currentSlot: slotId }, { requestedSlot: slotId }],
+                status: 'PENDING'
+            });
+
+            await logActivity({
+                action: 'DELETED',
+                performedBy: { userId: request.user?.userId, name: request.user?.name, role: request.user?.role },
+                target: { type: 'Slot', id: slotId, label: slot.label },
+                ip: request.ip
+            });
+
+            return reply.code(200).send({ success: true, message: 'Slot deleted successfully' });
+        } catch (error) {
+            fastify.log.error(error);
+            return reply.code(500).send({ error: 'Failed to delete slot' });
+        }
+    });
+
+    /**
+     * SLOT CHANGE REQUEST MANAGEMENT
+     */
+
+    /**
+     * GET /api/superadmin/slot-change-requests
+     * List slot change requests with optional status filter.
+     */
+    fastify.get('/slot-change-requests', { preValidation: [fastify.requireAdmin] }, async (request, reply) => {
+        try {
+            const { status, roundId, page = 1, limit = 20 } = request.query;
+            const filter = {};
+            if (status) filter.status = status;
+            if (roundId) filter.round = roundId;
+
+            const pageNum = Math.max(1, Number(page));
+            const limitNum = Math.max(1, Number(limit));
+            const skip = (pageNum - 1) * limitNum;
+
+            const [requests, total] = await Promise.all([
+                SlotChangeRequest.find(filter)
+                    .populate('student', 'studentId name')
+                    .populate('round', 'name')
+                    .populate('currentSlot', 'label startTime endTime')
+                    .populate('requestedSlot', 'label startTime endTime')
+                    .populate('reviewedBy', 'name')
+                    .sort({ createdAt: -1 })
+                    .skip(skip)
+                    .limit(limitNum)
+                    .lean(),
+                SlotChangeRequest.countDocuments(filter)
+            ]);
+
+            return reply.code(200).send({
+                success: true,
+                data: requests,
+                pagination: {
+                    totalRecords: total,
+                    page: pageNum,
+                    limit: limitNum,
+                    totalPages: Math.ceil(total / limitNum)
+                }
+            });
+        } catch (error) {
+            fastify.log.error(error);
+            return reply.code(500).send({ error: 'Failed to fetch slot change requests' });
+        }
+    });
+
+    /**
+     * POST /api/superadmin/slot-change-requests/:requestId/approve
+     * Approve a slot change request — moves the student's team to the new slot.
+     */
+    fastify.post('/slot-change-requests/:requestId/approve', { preValidation: [fastify.requireAdmin] }, async (request, reply) => {
+        try {
+            const { requestId } = request.params;
+            const changeReq = await SlotChangeRequest.findById(requestId);
+            if (!changeReq) return reply.code(404).send({ error: 'Slot change request not found' });
+            if (changeReq.status !== 'PENDING') {
+                return reply.code(400).send({ error: `Request already ${changeReq.status.toLowerCase()}` });
+            }
+
+            // Get the student's team
+            const student = await User.findById(changeReq.student).select('team');
+            if (!student || !student.team) {
+                return reply.code(400).send({ error: 'Student has no team assigned' });
+            }
+
+            const teamId = student.team;
+
+            // Remove team from current slot
+            await Slot.findByIdAndUpdate(changeReq.currentSlot, {
+                $pull: { teams: teamId }
+            });
+
+            // Add team to new slot
+            await Slot.findByIdAndUpdate(changeReq.requestedSlot, {
+                $addToSet: { teams: teamId }
+            });
+
+            // Update request status
+            changeReq.status = 'APPROVED';
+            changeReq.reviewedBy = request.user.userId;
+            changeReq.reviewedAt = new Date();
+            changeReq.adminMessage = request.body?.message || null;
+            await changeReq.save();
+
+            await logActivity({
+                action: 'SLOT_CHANGE_APPROVED',
+                performedBy: { userId: request.user?.userId, name: request.user?.name, role: request.user?.role },
+                target: { type: 'SlotChangeRequest', id: requestId, label: `Approved slot change for student ${changeReq.student}` },
+                ip: request.ip
+            });
+
+            return reply.code(200).send({ success: true, message: 'Slot change request approved. Team moved to the new slot.' });
+        } catch (error) {
+            fastify.log.error(error);
+            return reply.code(500).send({ error: 'Failed to approve slot change request' });
+        }
+    });
+
+    /**
+     * POST /api/superadmin/slot-change-requests/:requestId/reject
+     * Reject a slot change request with optional message.
+     */
+    fastify.post('/slot-change-requests/:requestId/reject', { preValidation: [fastify.requireAdmin] }, async (request, reply) => {
+        try {
+            const { requestId } = request.params;
+            const { message } = request.body || {};
+
+            const changeReq = await SlotChangeRequest.findById(requestId);
+            if (!changeReq) return reply.code(404).send({ error: 'Slot change request not found' });
+            if (changeReq.status !== 'PENDING') {
+                return reply.code(400).send({ error: `Request already ${changeReq.status.toLowerCase()}` });
+            }
+
+            changeReq.status = 'REJECTED';
+            changeReq.reviewedBy = request.user.userId;
+            changeReq.reviewedAt = new Date();
+            changeReq.adminMessage = message || 'Your slot change request was rejected.';
+            await changeReq.save();
+
+            await logActivity({
+                action: 'SLOT_CHANGE_REJECTED',
+                performedBy: { userId: request.user?.userId, name: request.user?.name, role: request.user?.role },
+                target: { type: 'SlotChangeRequest', id: requestId, label: `Rejected slot change for student ${changeReq.student}` },
+                ip: request.ip
+            });
+
+            return reply.code(200).send({ success: true, message: 'Slot change request rejected.' });
+        } catch (error) {
+            fastify.log.error(error);
+            return reply.code(500).send({ error: 'Failed to reject slot change request' });
         }
     });
 
